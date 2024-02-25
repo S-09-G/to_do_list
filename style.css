@@ -1,6 +1,8 @@
 body {
     font-family: sans-serif;
     margin: 20px;
+    background-color: #222;
+    color: #fff;
 }
 
 h1 {
@@ -12,6 +14,13 @@ h1 {
     padding: 10px;
     margin-bottom: 10px;
     border: 1px solid #ddd;
+    background-color: #333;
+    color: #fff;
+    transition: background-color 0.3s;
+}
+
+#new-task:focus {
+    background-color: #444;
 }
 
 #add-task {
@@ -20,18 +29,41 @@ h1 {
     color: #fff;
     border: none;
     cursor: pointer;
+    transition: background-color 0.3s;
+}
+
+#add-task:hover {
+    background-color: #444;
 }
 
 #task-list {
     list-style: none;
     padding: 0;
+    margin-top: 20px;
 }
 
 #task-list li {
     padding: 10px;
     border-bottom: 1px solid #ddd;
+    background-color: #333;
+    color: #fff;
+    transition: background-color 0.3s;
 }
 
 #task-list li:hover {
-    background-color: #ddd;
+    background-color: #444;
+}
+
+@media (max-width: 768px) {
+    body {
+        font-size: 16px;
+    }
+
+    #new-task {
+        font-size: 16px;
+    }
+
+    #task-list li {
+        font-size: 16px;
+    }
 }
