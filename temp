@@ -108,3 +108,52 @@ print(df_normalized.head())
 # =========================
 df_normalized.to_csv(OUTPUT_FILE)
 print(f"\nNormalized matrix saved to: {OUTPUT_FILE}")
+
+
+
+
+
+
+
+
+
+import pandas as pd
+from pathlib import Path
+
+# =========================
+# Paths
+# =========================
+DATA_DIR = Path("data")
+PROCESSED_DIR = DATA_DIR / "processed"
+
+INPUT_FILE = PROCESSED_DIR / "user_genre_matrix_normalized.csv"
+OUTPUT_FILE = PROCESSED_DIR / "user_genre_matrix_filtered.csv"
+
+MIN_GENRES = 3  # minimum non-zero genres per user
+
+# =========================
+# Load normalized matrix
+# =========================
+print("Loading normalized user-genre matrix...")
+df = pd.read_csv(INPUT_FILE, index_col=0)
+
+print(f"Initial number of users: {df.shape[0]}")
+
+# =========================
+# Count non-zero genres per user
+# =========================
+non_zero_counts = (df > 0).sum(axis=1)
+
+# =========================
+# Filter users
+# =========================
+df_filtered = df[non_zero_counts >= MIN_GENRES]
+
+print(f"Users after filtering: {df_filtered.shape[0]}")
+print(f"Users removed: {df.shape[0] - df_filtered.shape[0]}")
+
+# =========================
+# Save filtered matrix
+# =========================
+df_filtered.to_csv(OUTPUT_FILE)
+print(f"\nFiltered matrix saved to: {OUTPUT_FILE}")
