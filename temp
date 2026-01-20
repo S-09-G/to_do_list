@@ -243,3 +243,209 @@ print("\nK | Inertia | Silhouette Score")
 print("-" * 35)
 for k, inertia, sil in zip(k_values, inertias, silhouette_scores):
     print(f"{k:2d} | {inertia:.2f} | {sil:.4f}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import MiniBatchKMeans
+from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
+from logger import setup_logger
+
+# Initialize logger
+logger = setup_logger('05_clustering')
+
+# Set up paths
+DATA_DIR = Path('data')
+PROCESSED_DIR = DATA_DIR / 'processed'
+
+# Load user-topic scores
+logger.info("Loading user-topic scores...")
+user_topics_df = pd.read_csv(PROCESSED_DIR / 'user_topics.csv', index_col=0)
+
+logger.info(f"Data shape: {user_topics_df.shape}")
+
+# Extract only topic columns for clustering
+topic_columns = [col for col in user_topics_df.columns if col.startswith('topic_')]
+X = user_topics_df[topic_columns].values
+user_ids = user_topics_df.index.tolist()
+
+logger.info(f"Features for clustering: {len(topic_columns)} topics")
+logger.info(f"Users to cluster: {X.shape[0]}")
+
+# Scale the data
+logger.info("Scaling data...")
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+logger.info(f"Scaled data shape: {X_scaled.shape}")
+
+# Find optimal number of clusters using elbow method
+logger.info("=" * 50)
+logger.info("FINDING OPTIMAL NUMBER OF CLUSTERS")
+logger.info("=" * 50)
+
+k_range = range(3, 16)  # Test 3 to 15 clusters
+inertias = []
+silhouette_scores = []
+calinski_scores = []
+davies_bouldin_scores = []
+
+for k in k_range:
+    logger.info(f"Testing k={k}...")
+    
+    kmeans = MiniBatchKMeans(
+        n_clusters=k,
+        random_state=42,
+        batch_size=1024,
+        n_init=10
+    )
+    labels = kmeans.fit_predict(X_scaled)
+    
+    inertias.append(kmeans.inertia_)
+    silhouette_scores.append(silhouette_score(X_scaled, labels))
+    calinski_scores.append(calinski_harabasz_score(X_scaled, labels))
+    davies_bouldin_scores.append(davies_bouldin_score(X_scaled, labels))
+
+# Log evaluation metrics
+logger.info("\nCluster Evaluation Metrics:")
+logger.info("-" * 60)
+logger.info(f"{'K':<5} {'Inertia':<15} {'Silhouette':<12} {'Calinski':<12} {'Davies-Bouldin':<12}")
+logger.info("-" * 60)
+
+for i, k in enumerate(k_range):
+    logger.info(f"{k:<5} {inertias[i]:<15.2f} {silhouette_scores[i]:<12.4f} {calinski_scores[i]:<12.2f} {davies_bouldin_scores[i]:<12.4f}")
+
+# Find best k based on silhouette score
+best_k_idx = np.argmax(silhouette_scores)
+best_k = list(k_range)[best_k_idx]
+logger.info(f"\nBest k based on silhouette score: {best_k}")
+
+# Save evaluation metrics
+eval_df = pd.DataFrame({
+    'k': list(k_range),
+    'inertia': inertias,
+    'silhouette_score': silhouette_scores,
+    'calinski_harabasz_score': calinski_scores,
+    'davies_bouldin_score': davies_bouldin_scores
+})
+eval_df.to_csv(PROCESSED_DIR / 'cluster_evaluation.csv', index=False)
+logger.info(f"Saved: {PROCESSED_DIR / 'cluster_evaluation.csv'}")
+
+# Apply final clustering with best k
+logger.info("=" * 50)
+logger.info(f"APPLYING FINAL CLUSTERING WITH K={best_k}")
+logger.info("=" * 50)
+
+final_kmeans = MiniBatchKMeans(
+    n_clusters=best_k,
+    random_state=42,
+    batch_size=1024,
+    n_init=10
+)
+
+clusters = final_kmeans.fit_predict(X_scaled)
+
+logger.info(f"Clustering complete!")
+logger.info(f"Final silhouette score: {silhouette_score(X_scaled, clusters):.4f}")
+
+# Cluster distribution
+logger.info("=" * 50)
+logger.info("CLUSTER DISTRIBUTION")
+logger.info("=" * 50)
+
+cluster_counts = pd.Series(clusters).value_counts().sort_index()
+for cluster_id, count in cluster_counts.items():
+    percentage = count / len(clusters) * 100
+    logger.info(f"  Cluster {cluster_id}: {count} users ({percentage:.1f}%)")
+
+# Create results dataframe
+logger.info("Creating results dataframe...")
+results_df = user_topics_df.copy()
+results_df['cluster'] = clusters
+
+# Analyze cluster characteristics
+logger.info("=" * 50)
+logger.info("CLUSTER CHARACTERISTICS")
+logger.info("=" * 50)
+
+cluster_summary = []
+
+for cluster_id in range(best_k):
+    cluster_mask = clusters == cluster_id
+    cluster_data = X[cluster_mask]
+    
+    logger.info(f"\nCluster {cluster_id} ({sum(cluster_mask)} users):")
+    
+    # Average topic scores for this cluster
+    avg_topic_scores = cluster_data.mean(axis=0)
+    top_topic_indices = avg_topic_scores.argsort()[::-1][:3]
+    
+    top_topics = []
+    for rank, topic_idx in enumerate(top_topic_indices):
+        logger.info(f"  Top {rank+1}: topic_{topic_idx} (avg score: {avg_topic_scores[topic_idx]:.4f})")
+        top_topics.append(f"topic_{topic_idx}")
+    
+    # Build summary
+    summary = {
+        'cluster_id': cluster_id,
+        'user_count': sum(cluster_mask),
+        'percentage': sum(cluster_mask) / len(clusters) * 100,
+        'top_topic_1': top_topics[0],
+        'top_topic_2': top_topics[1],
+        'top_topic_3': top_topics[2]
+    }
+    
+    # Add average score for each topic
+    for i, score in enumerate(avg_topic_scores):
+        summary[f'avg_topic_{i}'] = score
+    
+    cluster_summary.append(summary)
+
+# Save results
+logger.info("Saving results...")
+
+# Save clustered users
+results_df.to_csv(PROCESSED_DIR / 'user_clusters.csv')
+logger.info(f"Saved: {PROCESSED_DIR / 'user_clusters.csv'}")
+
+# Save cluster summary
+cluster_summary_df = pd.DataFrame(cluster_summary)
+cluster_summary_df.to_csv(PROCESSED_DIR / 'cluster_summary.csv', index=False)
+logger.info(f"Saved: {PROCESSED_DIR / 'cluster_summary.csv'}")
+
+# Save cluster centers
+centers_df = pd.DataFrame(
+    final_kmeans.cluster_centers_,
+    columns=topic_columns
+)
+centers_df.index.name = 'cluster_id'
+centers_df.to_csv(PROCESSED_DIR / 'cluster_centers.csv')
+logger.info(f"Saved: {PROCESSED_DIR / 'cluster_centers.csv'}")
+
+logger.info("=" * 50)
+logger.info("CLUSTERING COMPLETE!")
+logger.info("=" * 50)
+logger.info(f"Total users: {len(clusters)}")
+logger.info(f"Number of clusters: {best_k}")
+logger.info(f"Best silhouette score: {silhouette_scores[best_k_idx]:.4f}")
