@@ -1,0 +1,110 @@
+import pandas as pd
+from pathlib import Path
+
+# =========================
+# Paths
+# =========================
+DATA_DIR = Path("data")
+PROCESSED_DIR = DATA_DIR / "processed"
+
+INPUT_FILE = PROCESSED_DIR / "cleaned_data.csv"
+OUTPUT_FILE = PROCESSED_DIR / "user_genre_matrix.csv"
+
+# =========================
+# Load cleaned data
+# =========================
+print("Loading cleaned data...")
+df = pd.read_csv(INPUT_FILE)
+
+print(f"Input data shape: {df.shape}")
+print(f"Unique users (guid): {df['guid'].nunique()}")
+print(f"Unique genres: {df['content_genre'].nunique()}")
+
+# =========================
+# Create user-genre matrix
+# =========================
+print("\nCreating user-genre matrix...")
+
+user_genre_matrix = df.pivot_table(
+    index="guid",
+    columns="content_genre",
+    values="score",
+    aggfunc="sum",      # Sum scores per user per genre
+    fill_value=0       # Missing combinations become 0
+)
+
+# =========================
+# Basic sanity checks
+# =========================
+print("User-genre matrix created.")
+print(f"Matrix shape: {user_genre_matrix.shape}")
+
+total_cells = user_genre_matrix.shape[0] * user_genre_matrix.shape[1]
+zero_cells = (user_genre_matrix == 0).sum().sum()
+density = 1 - (zero_cells / total_cells)
+
+print(f"Matrix density: {density:.4f}")
+print("\nSample rows:")
+print(user_genre_matrix.head())
+
+# =========================
+# Save matrix
+# =========================
+user_genre_matrix.to_csv(OUTPUT_FILE)
+print(f"\nUser-genre matrix saved to: {OUTPUT_FILE}")
+
+
+
+
+
+
+
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+
+# =========================
+# Paths
+# =========================
+DATA_DIR = Path("data")
+PROCESSED_DIR = DATA_DIR / "processed"
+
+INPUT_FILE = PROCESSED_DIR / "user_genre_matrix.csv"
+OUTPUT_FILE = PROCESSED_DIR / "user_genre_matrix_normalized.csv"
+
+# =========================
+# Load user-genre matrix
+# =========================
+print("Loading user-genre matrix...")
+df = pd.read_csv(INPUT_FILE, index_col=0)
+
+print(f"Matrix shape: {df.shape}")
+
+# =========================
+# L2 Normalization (row-wise)
+# =========================
+print("Applying L2 normalization per user...")
+
+# Compute L2 norm for each user
+l2_norm = np.sqrt((df ** 2).sum(axis=1))
+
+# Avoid division by zero
+df_normalized = df.div(l2_norm.replace(0, 1), axis=0)
+
+# =========================
+# Sanity checks
+# =========================
+norm_check = np.sqrt((df_normalized ** 2).sum(axis=1))
+
+print("\nL2 norm statistics (should be ~1.0):")
+print(norm_check.describe())
+
+print("\nSample normalized rows:")
+print(df_normalized.head())
+
+# =========================
+# Save normalized matrix
+# =========================
+df_normalized.to_csv(OUTPUT_FILE)
+print(f"\nNormalized matrix saved to: {OUTPUT_FILE}")
