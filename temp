@@ -157,3 +157,89 @@ print(f"Users removed: {df.shape[0] - df_filtered.shape[0]}")
 # =========================
 df_filtered.to_csv(OUTPUT_FILE)
 print(f"\nFiltered matrix saved to: {OUTPUT_FILE}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+from pathlib import Path
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+
+# =========================
+# Paths
+# =========================
+DATA_DIR = Path("data")
+PROCESSED_DIR = DATA_DIR / "processed"
+
+INPUT_FILE = PROCESSED_DIR / "user_genre_matrix_filtered.csv"
+
+# =========================
+# Load data
+# =========================
+print("Loading filtered user-genre matrix...")
+X = pd.read_csv(INPUT_FILE, index_col=0)
+
+print(f"Data shape for clustering: {X.shape}")
+
+# =========================
+# Range of K
+# =========================
+k_values = range(2, 16)
+
+inertias = []
+silhouette_scores = []
+
+# =========================
+# Run KMeans for each K
+# =========================
+for k in k_values:
+    print(f"Running KMeans for K={k}...")
+    kmeans = KMeans(
+        n_clusters=k,
+        random_state=42,
+        n_init=10
+    )
+    labels = kmeans.fit_predict(X)
+
+    inertias.append(kmeans.inertia_)
+    silhouette_scores.append(silhouette_score(X, labels))
+
+# =========================
+# Plot Elbow curve
+# =========================
+plt.figure()
+plt.plot(k_values, inertias, marker='o')
+plt.xlabel("Number of clusters (K)")
+plt.ylabel("Inertia")
+plt.title("Elbow Method")
+plt.show()
+
+# =========================
+# Plot Silhouette scores
+# =========================
+plt.figure()
+plt.plot(k_values, silhouette_scores, marker='o')
+plt.xlabel("Number of clusters (K)")
+plt.ylabel("Silhouette Score")
+plt.title("Silhouette Score vs K")
+plt.show()
+
+# =========================
+# Print results
+# =========================
+print("\nK | Inertia | Silhouette Score")
+print("-" * 35)
+for k, inertia, sil in zip(k_values, inertias, silhouette_scores):
+    print(f"{k:2d} | {inertia:.2f} | {sil:.4f}")
