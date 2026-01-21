@@ -1,451 +1,271 @@
-import pandas as pd
-from pathlib import Path
-
-# =========================
-# Paths
-# =========================
-DATA_DIR = Path("data")
-PROCESSED_DIR = DATA_DIR / "processed"
-
-INPUT_FILE = PROCESSED_DIR / "cleaned_data.csv"
-OUTPUT_FILE = PROCESSED_DIR / "user_genre_matrix.csv"
-
-# =========================
-# Load cleaned data
-# =========================
-print("Loading cleaned data...")
-df = pd.read_csv(INPUT_FILE)
-
-print(f"Input data shape: {df.shape}")
-print(f"Unique users (guid): {df['guid'].nunique()}")
-print(f"Unique genres: {df['content_genre'].nunique()}")
-
-# =========================
-# Create user-genre matrix
-# =========================
-print("\nCreating user-genre matrix...")
-
-user_genre_matrix = df.pivot_table(
-    index="guid",
-    columns="content_genre",
-    values="score",
-    aggfunc="sum",      # Sum scores per user per genre
-    fill_value=0       # Missing combinations become 0
-)
-
-# =========================
-# Basic sanity checks
-# =========================
-print("User-genre matrix created.")
-print(f"Matrix shape: {user_genre_matrix.shape}")
-
-total_cells = user_genre_matrix.shape[0] * user_genre_matrix.shape[1]
-zero_cells = (user_genre_matrix == 0).sum().sum()
-density = 1 - (zero_cells / total_cells)
-
-print(f"Matrix density: {density:.4f}")
-print("\nSample rows:")
-print(user_genre_matrix.head())
-
-# =========================
-# Save matrix
-# =========================
-user_genre_matrix.to_csv(OUTPUT_FILE)
-print(f"\nUser-genre matrix saved to: {OUTPUT_FILE}")
-
-
-
-
-
-
-
+"""
+Clustering algorithms for user segmentation.
+"""
 
 import pandas as pd
 import numpy as np
-from pathlib import Path
-
-# =========================
-# Paths
-# =========================
-DATA_DIR = Path("data")
-PROCESSED_DIR = DATA_DIR / "processed"
-
-INPUT_FILE = PROCESSED_DIR / "user_genre_matrix.csv"
-OUTPUT_FILE = PROCESSED_DIR / "user_genre_matrix_normalized.csv"
-
-# =========================
-# Load user-genre matrix
-# =========================
-print("Loading user-genre matrix...")
-df = pd.read_csv(INPUT_FILE, index_col=0)
-
-print(f"Matrix shape: {df.shape}")
-
-# =========================
-# L2 Normalization (row-wise)
-# =========================
-print("Applying L2 normalization per user...")
-
-# Compute L2 norm for each user
-l2_norm = np.sqrt((df ** 2).sum(axis=1))
-
-# Avoid division by zero
-df_normalized = df.div(l2_norm.replace(0, 1), axis=0)
-
-# =========================
-# Sanity checks
-# =========================
-norm_check = np.sqrt((df_normalized ** 2).sum(axis=1))
-
-print("\nL2 norm statistics (should be ~1.0):")
-print(norm_check.describe())
-
-print("\nSample normalized rows:")
-print(df_normalized.head())
-
-# =========================
-# Save normalized matrix
-# =========================
-df_normalized.to_csv(OUTPUT_FILE)
-print(f"\nNormalized matrix saved to: {OUTPUT_FILE}")
-
-
-
-
-
-
-
-
-
-import pandas as pd
-from pathlib import Path
-
-# =========================
-# Paths
-# =========================
-DATA_DIR = Path("data")
-PROCESSED_DIR = DATA_DIR / "processed"
-
-INPUT_FILE = PROCESSED_DIR / "user_genre_matrix_normalized.csv"
-OUTPUT_FILE = PROCESSED_DIR / "user_genre_matrix_filtered.csv"
-
-MIN_GENRES = 3  # minimum non-zero genres per user
-
-# =========================
-# Load normalized matrix
-# =========================
-print("Loading normalized user-genre matrix...")
-df = pd.read_csv(INPUT_FILE, index_col=0)
-
-print(f"Initial number of users: {df.shape[0]}")
-
-# =========================
-# Count non-zero genres per user
-# =========================
-non_zero_counts = (df > 0).sum(axis=1)
-
-# =========================
-# Filter users
-# =========================
-df_filtered = df[non_zero_counts >= MIN_GENRES]
-
-print(f"Users after filtering: {df_filtered.shape[0]}")
-print(f"Users removed: {df.shape[0] - df_filtered.shape[0]}")
-
-# =========================
-# Save filtered matrix
-# =========================
-df_filtered.to_csv(OUTPUT_FILE)
-print(f"\nFiltered matrix saved to: {OUTPUT_FILE}")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-import pandas as pd
-import matplotlib.pyplot as plt
-from pathlib import Path
-from sklearn.cluster import KMeans
+import os
+import pickle
+from sklearn.cluster import MiniBatchKMeans
 from sklearn.metrics import silhouette_score
 
-# =========================
-# Paths
-# =========================
-DATA_DIR = Path("data")
-PROCESSED_DIR = DATA_DIR / "processed"
 
-INPUT_FILE = PROCESSED_DIR / "user_genre_matrix_filtered.csv"
-
-# =========================
-# Load data
-# =========================
-print("Loading filtered user-genre matrix...")
-X = pd.read_csv(INPUT_FILE, index_col=0)
-
-print(f"Data shape for clustering: {X.shape}")
-
-# =========================
-# Range of K
-# =========================
-k_values = range(2, 16)
-
-inertias = []
-silhouette_scores = []
-
-# =========================
-# Run KMeans for each K
-# =========================
-for k in k_values:
-    print(f"Running KMeans for K={k}...")
-    kmeans = KMeans(
-        n_clusters=k,
-        random_state=42,
-        n_init=10
-    )
-    labels = kmeans.fit_predict(X)
-
-    inertias.append(kmeans.inertia_)
-    silhouette_scores.append(silhouette_score(X, labels))
-
-# =========================
-# Plot Elbow curve
-# =========================
-plt.figure()
-plt.plot(k_values, inertias, marker='o')
-plt.xlabel("Number of clusters (K)")
-plt.ylabel("Inertia")
-plt.title("Elbow Method")
-plt.show()
-
-# =========================
-# Plot Silhouette scores
-# =========================
-plt.figure()
-plt.plot(k_values, silhouette_scores, marker='o')
-plt.xlabel("Number of clusters (K)")
-plt.ylabel("Silhouette Score")
-plt.title("Silhouette Score vs K")
-plt.show()
-
-# =========================
-# Print results
-# =========================
-print("\nK | Inertia | Silhouette Score")
-print("-" * 35)
-for k, inertia, sil in zip(k_values, inertias, silhouette_scores):
-    print(f"{k:2d} | {inertia:.2f} | {sil:.4f}")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-import pandas as pd
-import numpy as np
-from pathlib import Path
-from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import MiniBatchKMeans
-from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
-from logger import setup_logger
-
-# Initialize logger
-logger = setup_logger('05_clustering')
-
-# Set up paths
-DATA_DIR = Path('data')
-PROCESSED_DIR = DATA_DIR / 'processed'
-
-# Load user-topic scores
-logger.info("Loading user-topic scores...")
-user_topics_df = pd.read_csv(PROCESSED_DIR / 'user_topics.csv', index_col=0)
-
-logger.info(f"Data shape: {user_topics_df.shape}")
-
-# Extract only topic columns for clustering
-topic_columns = [col for col in user_topics_df.columns if col.startswith('topic_')]
-X = user_topics_df[topic_columns].values
-user_ids = user_topics_df.index.tolist()
-
-logger.info(f"Features for clustering: {len(topic_columns)} topics")
-logger.info(f"Users to cluster: {X.shape[0]}")
-
-# Scale the data
-logger.info("Scaling data...")
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
-
-logger.info(f"Scaled data shape: {X_scaled.shape}")
-
-# Find optimal number of clusters using elbow method
-logger.info("=" * 50)
-logger.info("FINDING OPTIMAL NUMBER OF CLUSTERS")
-logger.info("=" * 50)
-
-k_range = range(3, 16)  # Test 3 to 15 clusters
-inertias = []
-silhouette_scores = []
-calinski_scores = []
-davies_bouldin_scores = []
-
-for k in k_range:
-    logger.info(f"Testing k={k}...")
+def find_optimal_clusters(
+    matrix: pd.DataFrame,
+    config: dict,
+    logger,
+    k_range: tuple = (3, 15)
+) -> dict:
+    """
+    Finds optimal number of clusters using Elbow Method and Silhouette Score.
     
-    kmeans = MiniBatchKMeans(
-        n_clusters=k,
-        random_state=42,
-        batch_size=1024,
-        n_init=10
-    )
-    labels = kmeans.fit_predict(X_scaled)
+    Args:
+        matrix: User-genre feature matrix
+        config: Configuration dictionary
+        logger: Logger instance
+        k_range: Tuple of (min_k, max_k) to test
     
-    inertias.append(kmeans.inertia_)
-    silhouette_scores.append(silhouette_score(X_scaled, labels))
-    calinski_scores.append(calinski_harabasz_score(X_scaled, labels))
-    davies_bouldin_scores.append(davies_bouldin_score(X_scaled, labels))
-
-# Log evaluation metrics
-logger.info("\nCluster Evaluation Metrics:")
-logger.info("-" * 60)
-logger.info(f"{'K':<5} {'Inertia':<15} {'Silhouette':<12} {'Calinski':<12} {'Davies-Bouldin':<12}")
-logger.info("-" * 60)
-
-for i, k in enumerate(k_range):
-    logger.info(f"{k:<5} {inertias[i]:<15.2f} {silhouette_scores[i]:<12.4f} {calinski_scores[i]:<12.2f} {davies_bouldin_scores[i]:<12.4f}")
-
-# Find best k based on silhouette score
-best_k_idx = np.argmax(silhouette_scores)
-best_k = list(k_range)[best_k_idx]
-logger.info(f"\nBest k based on silhouette score: {best_k}")
-
-# Save evaluation metrics
-eval_df = pd.DataFrame({
-    'k': list(k_range),
-    'inertia': inertias,
-    'silhouette_score': silhouette_scores,
-    'calinski_harabasz_score': calinski_scores,
-    'davies_bouldin_score': davies_bouldin_scores
-})
-eval_df.to_csv(PROCESSED_DIR / 'cluster_evaluation.csv', index=False)
-logger.info(f"Saved: {PROCESSED_DIR / 'cluster_evaluation.csv'}")
-
-# Apply final clustering with best k
-logger.info("=" * 50)
-logger.info(f"APPLYING FINAL CLUSTERING WITH K={best_k}")
-logger.info("=" * 50)
-
-final_kmeans = MiniBatchKMeans(
-    n_clusters=best_k,
-    random_state=42,
-    batch_size=1024,
-    n_init=10
-)
-
-clusters = final_kmeans.fit_predict(X_scaled)
-
-logger.info(f"Clustering complete!")
-logger.info(f"Final silhouette score: {silhouette_score(X_scaled, clusters):.4f}")
-
-# Cluster distribution
-logger.info("=" * 50)
-logger.info("CLUSTER DISTRIBUTION")
-logger.info("=" * 50)
-
-cluster_counts = pd.Series(clusters).value_counts().sort_index()
-for cluster_id, count in cluster_counts.items():
-    percentage = count / len(clusters) * 100
-    logger.info(f"  Cluster {cluster_id}: {count} users ({percentage:.1f}%)")
-
-# Create results dataframe
-logger.info("Creating results dataframe...")
-results_df = user_topics_df.copy()
-results_df['cluster'] = clusters
-
-# Analyze cluster characteristics
-logger.info("=" * 50)
-logger.info("CLUSTER CHARACTERISTICS")
-logger.info("=" * 50)
-
-cluster_summary = []
-
-for cluster_id in range(best_k):
-    cluster_mask = clusters == cluster_id
-    cluster_data = X[cluster_mask]
+    Returns:
+        Dictionary with evaluation metrics for each k
+    """
     
-    logger.info(f"\nCluster {cluster_id} ({sum(cluster_mask)} users):")
+    logger.info("=" * 50)
+    logger.info("FINDING OPTIMAL NUMBER OF CLUSTERS")
+    logger.info("=" * 50)
     
-    # Average topic scores for this cluster
-    avg_topic_scores = cluster_data.mean(axis=0)
-    top_topic_indices = avg_topic_scores.argsort()[::-1][:3]
+    random_state = config["clustering"]["random_state"]
+    batch_size = config["clustering"]["batch_size"]
     
-    top_topics = []
-    for rank, topic_idx in enumerate(top_topic_indices):
-        logger.info(f"  Top {rank+1}: topic_{topic_idx} (avg score: {avg_topic_scores[topic_idx]:.4f})")
-        top_topics.append(f"topic_{topic_idx}")
+    k_min, k_max = k_range
+    logger.info(f"Testing k from {k_min} to {k_max}...")
     
-    # Build summary
-    summary = {
-        'cluster_id': cluster_id,
-        'user_count': sum(cluster_mask),
-        'percentage': sum(cluster_mask) / len(clusters) * 100,
-        'top_topic_1': top_topics[0],
-        'top_topic_2': top_topics[1],
-        'top_topic_3': top_topics[2]
+    results = {
+        "k_values": [],
+        "inertia": [],          # For Elbow Method
+        "silhouette": []        # For Silhouette Score
     }
     
-    # Add average score for each topic
-    for i, score in enumerate(avg_topic_scores):
-        summary[f'avg_topic_{i}'] = score
+    matrix_values = matrix.values
     
-    cluster_summary.append(summary)
+    for k in range(k_min, k_max + 1):
+        logger.info(f"  Testing k={k}...")
+        
+        # Fit MiniBatch KMeans
+        kmeans = MiniBatchKMeans(
+            n_clusters=k,
+            random_state=random_state,
+            batch_size=batch_size,
+            n_init=10
+        )
+        
+        cluster_labels = kmeans.fit_predict(matrix_values)
+        
+        # Calculate metrics
+        inertia = kmeans.inertia_
+        silhouette = silhouette_score(matrix_values, cluster_labels)
+        
+        results["k_values"].append(k)
+        results["inertia"].append(inertia)
+        results["silhouette"].append(silhouette)
+        
+        logger.info(f"    Inertia: {inertia:,.2f} | Silhouette: {silhouette:.4f}")
+    
+    # Find best k based on silhouette score
+    best_idx = np.argmax(results["silhouette"])
+    best_k = results["k_values"][best_idx]
+    best_silhouette = results["silhouette"][best_idx]
+    
+    logger.info("-" * 50)
+    logger.info(f"Best k based on Silhouette Score: {best_k} (score: {best_silhouette:.4f})")
+    
+    return results
 
-# Save results
-logger.info("Saving results...")
 
-# Save clustered users
-results_df.to_csv(PROCESSED_DIR / 'user_clusters.csv')
-logger.info(f"Saved: {PROCESSED_DIR / 'user_clusters.csv'}")
+def train_clustering_model(
+    matrix: pd.DataFrame,
+    config: dict,
+    logger,
+    n_clusters: int = None
+) -> tuple:
+    """
+    Trains the final clustering model.
+    
+    Args:
+        matrix: User-genre feature matrix
+        config: Configuration dictionary
+        logger: Logger instance
+        n_clusters: Number of clusters (uses config value if None)
+    
+    Returns:
+        Tuple of (trained model, cluster labels)
+    """
+    
+    if n_clusters is None:
+        n_clusters = config["clustering"]["n_clusters"]
+    
+    random_state = config["clustering"]["random_state"]
+    batch_size = config["clustering"]["batch_size"]
+    
+    logger.info("=" * 50)
+    logger.info("TRAINING CLUSTERING MODEL")
+    logger.info("=" * 50)
+    logger.info(f"Algorithm: MiniBatch K-Means")
+    logger.info(f"Number of clusters: {n_clusters}")
+    
+    # Train model
+    model = MiniBatchKMeans(
+        n_clusters=n_clusters,
+        random_state=random_state,
+        batch_size=batch_size,
+        n_init=10
+    )
+    
+    matrix_values = matrix.values
+    cluster_labels = model.fit_predict(matrix_values)
+    
+    # Calculate final metrics
+    inertia = model.inertia_
+    silhouette = silhouette_score(matrix_values, cluster_labels)
+    
+    logger.info(f"Training complete!")
+    logger.info(f"  Inertia: {inertia:,.2f}")
+    logger.info(f"  Silhouette Score: {silhouette:.4f}")
+    
+    # Cluster distribution
+    logger.info("-" * 50)
+    logger.info("CLUSTER DISTRIBUTION:")
+    unique, counts = np.unique(cluster_labels, return_counts=True)
+    for cluster_id, count in zip(unique, counts):
+        pct = (count / len(cluster_labels)) * 100
+        logger.info(f"  Cluster {cluster_id}: {count:,} users ({pct:.1f}%)")
+    
+    return model, cluster_labels
 
-# Save cluster summary
-cluster_summary_df = pd.DataFrame(cluster_summary)
-cluster_summary_df.to_csv(PROCESSED_DIR / 'cluster_summary.csv', index=False)
-logger.info(f"Saved: {PROCESSED_DIR / 'cluster_summary.csv'}")
 
-# Save cluster centers
-centers_df = pd.DataFrame(
-    final_kmeans.cluster_centers_,
-    columns=topic_columns
+def save_model(model, config: dict, logger) -> str:
+    """
+    Saves the trained clustering model to disk.
+    
+    Args:
+        model: Trained clustering model
+        config: Configuration dictionary
+        logger: Logger instance
+    
+    Returns:
+        Path where model was saved
+    """
+    
+    output_dir = config["paths"]["models"]
+    os.makedirs(output_dir, exist_ok=True)
+    
+    model_path = os.path.join(output_dir, "clustering_model.pkl")
+    
+    with open(model_path, "wb") as f:
+        pickle.dump(model, f)
+    
+    logger.info(f"Model saved to: {model_path}")
+    
+    return model_path
+
+
+def save_cluster_assignments(
+    matrix: pd.DataFrame,
+    cluster_labels: np.ndarray,
+    config: dict,
+    logger
+) -> str:
+    """
+    Saves user cluster assignments to a CSV file.
+    
+    Args:
+        matrix: User-genre matrix (to get user IDs from index)
+        cluster_labels: Array of cluster assignments
+        config: Configuration dictionary
+        logger: Logger instance
+    
+    Returns:
+        Path where assignments were saved
+    """
+    
+    output_dir = config["paths"]["processed_data"]
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Create assignments dataframe
+    assignments = pd.DataFrame({
+        "user_id": matrix.index,
+        "cluster": cluster_labels
+    })
+    
+    output_path = os.path.join(output_dir, "cluster_assignments.csv")
+    assignments.to_csv(output_path, index=False)
+    
+    logger.info(f"Cluster assignments saved to: {output_path}")
+    
+    return output_path
+
+
+
+
+
+
+
+
+
+
+
+"""
+Step 4: Cluster users based on genre preferences.
+Run from project root: python run_clustering.py
+"""
+
+import pandas as pd
+from src.config_loader import load_config
+from src.logger_setup import setup_logger
+from src.models.clustering import (
+    find_optimal_clusters,
+    train_clustering_model,
+    save_model,
+    save_cluster_assignments
 )
-centers_df.index.name = 'cluster_id'
-centers_df.to_csv(PROCESSED_DIR / 'cluster_centers.csv')
-logger.info(f"Saved: {PROCESSED_DIR / 'cluster_centers.csv'}")
 
-logger.info("=" * 50)
-logger.info("CLUSTERING COMPLETE!")
-logger.info("=" * 50)
-logger.info(f"Total users: {len(clusters)}")
-logger.info(f"Number of clusters: {best_k}")
-logger.info(f"Best silhouette score: {silhouette_scores[best_k_idx]:.4f}")
+
+def main():
+    # Load config
+    config = load_config()
+    
+    # Setup logger
+    logger = setup_logger(
+        log_dir=config["paths"]["logs"],
+        log_filename="clustering.log",
+        level=config["logging"]["level"]
+    )
+    
+    logger.info("Starting clustering pipeline...")
+    
+    # Load feature matrix
+    matrix_path = config["paths"]["processed_data"] + "user_genre_matrix.csv"
+    logger.info(f"Loading feature matrix from: {matrix_path}")
+    matrix = pd.read_csv(matrix_path, index_col=0)
+    logger.info(f"Loaded matrix: {matrix.shape[0]:,} users × {matrix.shape[1]} genres")
+    
+    # Step 1: Find optimal number of clusters
+    results = find_optimal_clusters(matrix, config, logger, k_range=(3, 15))
+    
+    # Step 2: Ask user for final k (or use best from silhouette)
+    best_k = results["k_values"][results["silhouette"].index(max(results["silhouette"]))]
+    logger.info(f"Recommended k: {best_k}")
+    
+    # Step 3: Train final model with best k
+    model, cluster_labels = train_clustering_model(matrix, config, logger, n_clusters=best_k)
+    
+    # Step 4: Save model and assignments
+    save_model(model, config, logger)
+    save_cluster_assignments(matrix, cluster_labels, config, logger)
+    
+    logger.info("Clustering complete!")
+    
+    return model, cluster_labels, results
+
+
+if __name__ == "__main__":
+    model, labels, results = main()
