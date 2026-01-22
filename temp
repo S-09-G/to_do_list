@@ -464,3 +464,509 @@ def main():
 
 if __name__ == "__main__":
     results, comparison = main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+"""
+Comprehensive cluster evaluation and interpretability.
+Provides business-friendly metrics and visualizations.
+"""
+
+import pandas as pd
+import numpy as np
+import os
+from collections import Counter
+
+
+def analyze_cluster_profiles(
+    normalized_matrix: pd.DataFrame,
+    cluster_labels: np.ndarray,
+    config: dict,
+    logger,
+    top_n_genres: int = 10
+) -> pd.DataFrame:
+    """
+    Creates interpretable profiles for each cluster.
+    Shows top genres that define each cluster.
+    
+    THIS IS THE MOST IMPORTANT FUNCTION FOR BUSINESS EXPLANATION.
+    
+    Args:
+        normalized_matrix: The normalized user-genre matrix (BEFORE SVD)
+        cluster_labels: Cluster assignments for each user
+        config: Configuration dictionary
+        logger: Logger instance
+        top_n_genres: Number of top genres to show per cluster
+    
+    Returns:
+        DataFrame with cluster profiles
+    """
+    
+    logger.info("=" * 60)
+    logger.info("CLUSTER PROFILE ANALYSIS")
+    logger.info("=" * 60)
+    
+    # Add cluster labels to matrix
+    matrix_with_clusters = normalized_matrix.copy()
+    matrix_with_clusters["cluster"] = cluster_labels
+    
+    # Calculate mean genre scores per cluster
+    cluster_profiles = matrix_with_clusters.groupby("cluster").mean()
+    
+    n_clusters = len(cluster_profiles)
+    
+    # For each cluster, find defining characteristics
+    cluster_summaries = []
+    
+    for cluster_id in range(n_clusters):
+        cluster_data = cluster_profiles.loc[cluster_id]
+        cluster_size = (cluster_labels == cluster_id).sum()
+        cluster_pct = (cluster_size / len(cluster_labels)) * 100
+        
+        # Top genres for this cluster
+        top_genres = cluster_data.sort_values(ascending=False).head(top_n_genres)
+        
+        # What makes this cluster UNIQUE (compare to overall average)
+        overall_avg = normalized_matrix.mean()
+        difference = cluster_data - overall_avg
+        most_distinctive = difference.sort_values(ascending=False).head(5)
+        
+        logger.info("-" * 60)
+        logger.info(f"CLUSTER {cluster_id}: {cluster_size:,} users ({cluster_pct:.1f}%)")
+        logger.info("-" * 60)
+        
+        logger.info("Top 5 Favorite Genres:")
+        for i, (genre, score) in enumerate(top_genres.head(5).items(), 1):
+            logger.info(f"  {i}. {genre}: {score:.4f}")
+        
+        logger.info("\nMost Distinctive Preferences (vs average user):")
+        for genre, diff in most_distinctive.items():
+            direction = "↑" if diff > 0 else "↓"
+            logger.info(f"  {genre}: {direction} {abs(diff):.4f}")
+        
+        # Store summary
+        cluster_summaries.append({
+            "cluster_id": cluster_id,
+            "size": cluster_size,
+            "percentage": cluster_pct,
+            "top_genre_1": top_genres.index[0] if len(top_genres) > 0 else None,
+            "top_genre_2": top_genres.index[1] if len(top_genres) > 1 else None,
+            "top_genre_3": top_genres.index[2] if len(top_genres) > 2 else None,
+            "most_distinctive": most_distinctive.index[0] if len(most_distinctive) > 0 else None
+        })
+    
+    summary_df = pd.DataFrame(cluster_summaries)
+    
+    return summary_df, cluster_profiles
+
+
+def generate_cluster_names(
+    cluster_profiles: pd.DataFrame,
+    logger,
+    top_n: int = 2
+) -> dict:
+    """
+    Automatically generates human-readable names for clusters
+    based on their top genres.
+    
+    Args:
+        cluster_profiles: Mean genre scores per cluster
+        logger: Logger instance
+        top_n: Number of top genres to use for naming
+    
+    Returns:
+        Dictionary mapping cluster_id to suggested name
+    """
+    
+    logger.info("=" * 60)
+    logger.info("SUGGESTED CLUSTER NAMES")
+    logger.info("=" * 60)
+    
+    cluster_names = {}
+    
+    for cluster_id in cluster_profiles.index:
+        top_genres = cluster_profiles.loc[cluster_id].sort_values(ascending=False).head(top_n)
+        
+        # Create name from top genres
+        genre_names = [g.replace("_", " ").title() for g in top_genres.index]
+        suggested_name = " & ".join(genre_names) + " Enthusiasts"
+        
+        cluster_names[cluster_id] = suggested_name
+        logger.info(f"  Cluster {cluster_id}: \"{suggested_name}\"")
+    
+    return cluster_names
+
+
+def calculate_cluster_cohesion(
+    matrix: pd.DataFrame,
+    cluster_labels: np.ndarray,
+    logger
+) -> pd.DataFrame:
+    """
+    Calculates how cohesive each cluster is internally.
+    Higher cohesion = users in cluster are more similar to each other.
+    
+    Args:
+        matrix: Feature matrix
+        cluster_labels: Cluster assignments
+        logger: Logger instance
+    
+    Returns:
+        DataFrame with cohesion metrics per cluster
+    """
+    
+    from sklearn.metrics import pairwise_distances
+    
+    logger.info("=" * 60)
+    logger.info("CLUSTER COHESION ANALYSIS")
+    logger.info("=" * 60)
+    
+    cohesion_results = []
+    
+    for cluster_id in np.unique(cluster_labels):
+        # Get users in this cluster
+        cluster_mask = cluster_labels == cluster_id
+        cluster_data = matrix.values[cluster_mask]
+        
+        if len(cluster_data) < 2:
+            continue
+        
+        # Calculate average distance within cluster
+        distances = pairwise_distances(cluster_data)
+        avg_internal_distance = distances[np.triu_indices(len(distances), k=1)].mean()
+        
+        # Calculate distance to cluster center
+        center = cluster_data.mean(axis=0)
+        distances_to_center = np.linalg.norm(cluster_data - center, axis=1)
+        avg_distance_to_center = distances_to_center.mean()
+        
+        cohesion_results.append({
+            "cluster_id": cluster_id,
+            "size": cluster_mask.sum(),
+            "avg_internal_distance": avg_internal_distance,
+            "avg_distance_to_center": avg_distance_to_center,
+            "cohesion_score": 1 / (1 + avg_distance_to_center)  # Higher is better
+        })
+        
+        logger.info(f"Cluster {cluster_id}: Cohesion = {1 / (1 + avg_distance_to_center):.4f}")
+    
+    return pd.DataFrame(cohesion_results)
+
+
+def calculate_cluster_separation(
+    matrix: pd.DataFrame,
+    cluster_labels: np.ndarray,
+    logger
+) -> pd.DataFrame:
+    """
+    Calculates how well-separated clusters are from each other.
+    
+    Args:
+        matrix: Feature matrix
+        cluster_labels: Cluster assignments
+        logger: Logger instance
+    
+    Returns:
+        DataFrame with separation metrics between cluster pairs
+    """
+    
+    logger.info("=" * 60)
+    logger.info("CLUSTER SEPARATION ANALYSIS")
+    logger.info("=" * 60)
+    
+    unique_clusters = np.unique(cluster_labels)
+    
+    # Calculate cluster centers
+    centers = {}
+    for cluster_id in unique_clusters:
+        cluster_mask = cluster_labels == cluster_id
+        centers[cluster_id] = matrix.values[cluster_mask].mean(axis=0)
+    
+    # Calculate distances between cluster centers
+    separation_results = []
+    
+    for i, c1 in enumerate(unique_clusters):
+        for c2 in unique_clusters[i+1:]:
+            distance = np.linalg.norm(centers[c1] - centers[c2])
+            separation_results.append({
+                "cluster_1": c1,
+                "cluster_2": c2,
+                "center_distance": distance
+            })
+    
+    separation_df = pd.DataFrame(separation_results)
+    
+    avg_separation = separation_df["center_distance"].mean()
+    min_separation = separation_df["center_distance"].min()
+    max_separation = separation_df["center_distance"].max()
+    
+    logger.info(f"Average separation between clusters: {avg_separation:.4f}")
+    logger.info(f"Minimum separation: {min_separation:.4f}")
+    logger.info(f"Maximum separation: {max_separation:.4f}")
+    
+    # Show closest cluster pairs (potential merge candidates)
+    logger.info("\nClosest cluster pairs:")
+    closest = separation_df.nsmallest(3, "center_distance")
+    for _, row in closest.iterrows():
+        logger.info(f"  Cluster {int(row['cluster_1'])} ↔ Cluster {int(row['cluster_2'])}: {row['center_distance']:.4f}")
+    
+    return separation_df
+
+
+def validate_cluster_stability(
+    matrix: pd.DataFrame,
+    config: dict,
+    logger,
+    n_runs: int = 5,
+    n_clusters: int = 10
+) -> float:
+    """
+    Tests if clustering is stable across multiple runs.
+    High stability = clusters are real patterns, not random artifacts.
+    
+    Args:
+        matrix: Feature matrix
+        config: Configuration dictionary
+        logger: Logger instance
+        n_runs: Number of times to run clustering
+        n_clusters: Number of clusters to use
+    
+    Returns:
+        Stability score (0 to 1, higher is better)
+    """
+    
+    from sklearn.cluster import MiniBatchKMeans
+    from sklearn.metrics import adjusted_rand_score
+    
+    logger.info("=" * 60)
+    logger.info("CLUSTER STABILITY ANALYSIS")
+    logger.info("=" * 60)
+    logger.info(f"Running {n_runs} clustering iterations...")
+    
+    batch_size = config["clustering"].get("batch_size", 1024)
+    
+    # Run clustering multiple times with different random seeds
+    all_labels = []
+    
+    for i in range(n_runs):
+        model = MiniBatchKMeans(
+            n_clusters=n_clusters,
+            random_state=i * 42,  # Different seed each time
+            batch_size=batch_size,
+            n_init=10
+        )
+        labels = model.fit_predict(matrix.values)
+        all_labels.append(labels)
+    
+    # Compare all pairs of runs using Adjusted Rand Index
+    ari_scores = []
+    
+    for i in range(n_runs):
+        for j in range(i + 1, n_runs):
+            ari = adjusted_rand_score(all_labels[i], all_labels[j])
+            ari_scores.append(ari)
+    
+    avg_stability = np.mean(ari_scores)
+    
+    logger.info(f"\nStability Score (Adjusted Rand Index): {avg_stability:.4f}")
+    
+    if avg_stability > 0.8:
+        logger.info("✓ EXCELLENT: Clusters are highly stable")
+    elif avg_stability > 0.6:
+        logger.info("✓ GOOD: Clusters are reasonably stable")
+    elif avg_stability > 0.4:
+        logger.info("⚠ MODERATE: Some instability in cluster assignments")
+    else:
+        logger.info("✗ LOW: Clusters may not represent real patterns")
+    
+    return avg_stability
+
+
+def create_evaluation_report(
+    matrix: pd.DataFrame,
+    normalized_matrix: pd.DataFrame,
+    cluster_labels: np.ndarray,
+    config: dict,
+    logger,
+    algorithm: str = "minibatch_kmeans"
+) -> dict:
+    """
+    Creates a comprehensive evaluation report.
+    
+    Args:
+        matrix: SVD-reduced feature matrix (used for clustering)
+        normalized_matrix: Original normalized matrix (for interpretability)
+        cluster_labels: Cluster assignments
+        config: Configuration dictionary
+        logger: Logger instance
+        algorithm: Algorithm name
+    
+    Returns:
+        Dictionary with all evaluation results
+    """
+    
+    logger.info("\n" + "=" * 60)
+    logger.info("COMPREHENSIVE CLUSTER EVALUATION REPORT")
+    logger.info("=" * 60)
+    
+    n_clusters = len(np.unique(cluster_labels))
+    
+    # 1. Cluster Profiles (MOST IMPORTANT FOR BUSINESS)
+    summary_df, cluster_profiles = analyze_cluster_profiles(
+        normalized_matrix, cluster_labels, config, logger
+    )
+    
+    # 2. Suggested Names
+    cluster_names = generate_cluster_names(cluster_profiles, logger)
+    
+    # 3. Cohesion Analysis
+    cohesion_df = calculate_cluster_cohesion(matrix, cluster_labels, logger)
+    
+    # 4. Separation Analysis
+    separation_df = calculate_cluster_separation(matrix, cluster_labels, logger)
+    
+    # 5. Stability Analysis
+    stability_score = validate_cluster_stability(
+        matrix, config, logger, n_runs=5, n_clusters=n_clusters
+    )
+    
+    # Save all reports
+    report_dir = config["paths"]["reports"]
+    os.makedirs(report_dir, exist_ok=True)
+    
+    summary_df.to_csv(os.path.join(report_dir, f"cluster_summary_{algorithm}.csv"), index=False)
+    cluster_profiles.to_csv(os.path.join(report_dir, f"cluster_profiles_{algorithm}.csv"))
+    cohesion_df.to_csv(os.path.join(report_dir, f"cluster_cohesion_{algorithm}.csv"), index=False)
+    separation_df.to_csv(os.path.join(report_dir, f"cluster_separation_{algorithm}.csv"), index=False)
+    
+    logger.info(f"\nReports saved to: {report_dir}")
+    
+    # Final Summary for Management
+    logger.info("\n" + "=" * 60)
+    logger.info("EXECUTIVE SUMMARY (FOR MANAGEMENT)")
+    logger.info("=" * 60)
+    
+    logger.info(f"\n1. NUMBER OF USER SEGMENTS: {n_clusters}")
+    logger.info(f"\n2. CLUSTER STABILITY: {stability_score:.2%}")
+    if stability_score > 0.6:
+        logger.info("   → Clusters represent REAL patterns in user behavior")
+    
+    logger.info(f"\n3. USER SEGMENTS IDENTIFIED:")
+    for cluster_id, name in cluster_names.items():
+        size = (cluster_labels == cluster_id).sum()
+        pct = size / len(cluster_labels) * 100
+        logger.info(f"   • {name}: {size:,} users ({pct:.1f}%)")
+    
+    logger.info(f"\n4. BUSINESS VALUE:")
+    logger.info("   → Each segment has distinct content preferences")
+    logger.info("   → Enables targeted content recommendations")
+    logger.info("   → New users can be automatically assigned to segments")
+    
+    return {
+        "summary": summary_df,
+        "profiles": cluster_profiles,
+        "names": cluster_names,
+        "cohesion": cohesion_df,
+        "separation": separation_df,
+        "stability": stability_score
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+"""
+Step 5: Evaluate and interpret clusters.
+Run from project root: python run_evaluation.py
+"""
+
+import pandas as pd
+import numpy as np
+from src.config_loader import load_config
+from src.logger_setup import setup_logger
+from src.evaluation.cluster_evaluator import create_evaluation_report
+
+
+def main():
+    # Load config
+    config = load_config()
+    
+    # Setup logger
+    logger = setup_logger(
+        log_dir=config["paths"]["logs"],
+        log_filename="evaluation.log",
+        level=config["logging"]["level"]
+    )
+    
+    logger.info("Starting cluster evaluation...")
+    
+    # Load the SVD-reduced matrix (used for clustering)
+    matrix_path = config["paths"]["processed_data"] + "user_genre_matrix.csv"
+    matrix = pd.read_csv(matrix_path, index_col=0)
+    logger.info(f"Loaded clustering matrix: {matrix.shape}")
+    
+    # Load the normalized matrix BEFORE SVD (for interpretability)
+    normalized_path = config["paths"]["processed_data"] + "user_genre_matrix_normalized.csv"
+    normalized_matrix = pd.read_csv(normalized_path, index_col=0)
+    logger.info(f"Loaded normalized matrix: {normalized_matrix.shape}")
+    
+    # Load cluster assignments
+    assignments_path = config["paths"]["processed_data"] + "cluster_assignments_minibatch_kmeans.csv"
+    assignments = pd.read_csv(assignments_path)
+    cluster_labels = assignments["cluster"].values
+    logger.info(f"Loaded {len(cluster_labels):,} cluster assignments")
+    
+    # Align matrices (ensure same users in same order)
+    common_users = matrix.index.intersection(normalized_matrix.index)
+    matrix = matrix.loc[common_users]
+    normalized_matrix = normalized_matrix.loc[common_users]
+    
+    # Create comprehensive evaluation report
+    results = create_evaluation_report(
+        matrix=matrix,
+        normalized_matrix=normalized_matrix,
+        cluster_labels=cluster_labels,
+        config=config,
+        logger=logger,
+        algorithm="minibatch_kmeans"
+    )
+    
+    logger.info("\nEvaluation complete!")
+    
+    return results
+
+
+if __name__ == "__main__":
+    results = main()
