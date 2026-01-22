@@ -1,5 +1,6 @@
 """
 Clustering algorithms for user segmentation.
+Supports MiniBatch K-Means and Gaussian Mixture Model (GMM).
 """
 
 import pandas as pd
@@ -7,42 +8,48 @@ import numpy as np
 import os
 import pickle
 from sklearn.cluster import MiniBatchKMeans
-from sklearn.metrics import silhouette_score
+from sklearn.mixture import GaussianMixture
+from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
 
 
 def find_optimal_clusters(
     matrix: pd.DataFrame,
     config: dict,
     logger,
-    k_range: tuple = (3, 15)
+    k_range: tuple = (3, 15),
+    algorithm: str = "minibatch_kmeans"
 ) -> dict:
     """
-    Finds optimal number of clusters using Elbow Method and Silhouette Score.
+    Finds optimal number of clusters using multiple metrics.
     
     Args:
         matrix: User-genre feature matrix
         config: Configuration dictionary
         logger: Logger instance
         k_range: Tuple of (min_k, max_k) to test
+        algorithm: 'minibatch_kmeans' or 'gmm'
     
     Returns:
         Dictionary with evaluation metrics for each k
     """
     
     logger.info("=" * 50)
-    logger.info("FINDING OPTIMAL NUMBER OF CLUSTERS")
+    logger.info(f"FINDING OPTIMAL CLUSTERS - {algorithm.upper()}")
     logger.info("=" * 50)
     
     random_state = config["clustering"]["random_state"]
-    batch_size = config["clustering"]["batch_size"]
+    batch_size = config["clustering"].get("batch_size", 1024)
     
     k_min, k_max = k_range
     logger.info(f"Testing k from {k_min} to {k_max}...")
     
     results = {
         "k_values": [],
-        "inertia": [],          # For Elbow Method
-        "silhouette": []        # For Silhouette Score
+        "inertia": [],              # For Elbow Method (K-Means only)
+        "silhouette": [],           # Higher is better
+        "calinski_harabasz": [],    # Higher is better
+        "davies_bouldin": [],       # Lower is better
+        "bic": []                   # For GMM only - Lower is better
     }
     
     matrix_values = matrix.values
@@ -50,25 +57,45 @@ def find_optimal_clusters(
     for k in range(k_min, k_max + 1):
         logger.info(f"  Testing k={k}...")
         
-        # Fit MiniBatch KMeans
-        kmeans = MiniBatchKMeans(
-            n_clusters=k,
-            random_state=random_state,
-            batch_size=batch_size,
-            n_init=10
-        )
+        if algorithm == "minibatch_kmeans":
+            model = MiniBatchKMeans(
+                n_clusters=k,
+                random_state=random_state,
+                batch_size=batch_size,
+                n_init=10
+            )
+            cluster_labels = model.fit_predict(matrix_values)
+            inertia = model.inertia_
+            bic = None
+            
+        elif algorithm == "gmm":
+            model = GaussianMixture(
+                n_components=k,
+                random_state=random_state,
+                covariance_type='full',
+                n_init=5,
+                max_iter=200
+            )
+            cluster_labels = model.fit_predict(matrix_values)
+            inertia = None
+            bic = model.bic(matrix_values)  # Bayesian Information Criterion
         
-        cluster_labels = kmeans.fit_predict(matrix_values)
-        
-        # Calculate metrics
-        inertia = kmeans.inertia_
+        # Calculate common metrics
         silhouette = silhouette_score(matrix_values, cluster_labels)
+        calinski = calinski_harabasz_score(matrix_values, cluster_labels)
+        davies = davies_bouldin_score(matrix_values, cluster_labels)
         
         results["k_values"].append(k)
         results["inertia"].append(inertia)
         results["silhouette"].append(silhouette)
+        results["calinski_harabasz"].append(calinski)
+        results["davies_bouldin"].append(davies)
+        results["bic"].append(bic)
         
-        logger.info(f"    Inertia: {inertia:,.2f} | Silhouette: {silhouette:.4f}")
+        if algorithm == "minibatch_kmeans":
+            logger.info(f"    Silhouette: {silhouette:.4f} | Calinski: {calinski:.2f} | Davies-Bouldin: {davies:.4f}")
+        else:
+            logger.info(f"    Silhouette: {silhouette:.4f} | BIC: {bic:.2f} | Davies-Bouldin: {davies:.4f}")
     
     # Find best k based on silhouette score
     best_idx = np.argmax(results["silhouette"])
@@ -85,7 +112,8 @@ def train_clustering_model(
     matrix: pd.DataFrame,
     config: dict,
     logger,
-    n_clusters: int = None
+    n_clusters: int = None,
+    algorithm: str = "minibatch_kmeans"
 ) -> tuple:
     """
     Trains the final clustering model.
@@ -95,41 +123,56 @@ def train_clustering_model(
         config: Configuration dictionary
         logger: Logger instance
         n_clusters: Number of clusters (uses config value if None)
+        algorithm: 'minibatch_kmeans' or 'gmm'
     
     Returns:
-        Tuple of (trained model, cluster labels)
+        Tuple of (trained model, cluster labels, probabilities if GMM)
     """
     
     if n_clusters is None:
         n_clusters = config["clustering"]["n_clusters"]
     
     random_state = config["clustering"]["random_state"]
-    batch_size = config["clustering"]["batch_size"]
+    batch_size = config["clustering"].get("batch_size", 1024)
     
     logger.info("=" * 50)
     logger.info("TRAINING CLUSTERING MODEL")
     logger.info("=" * 50)
-    logger.info(f"Algorithm: MiniBatch K-Means")
+    logger.info(f"Algorithm: {algorithm}")
     logger.info(f"Number of clusters: {n_clusters}")
     
-    # Train model
-    model = MiniBatchKMeans(
-        n_clusters=n_clusters,
-        random_state=random_state,
-        batch_size=batch_size,
-        n_init=10
-    )
-    
     matrix_values = matrix.values
-    cluster_labels = model.fit_predict(matrix_values)
+    
+    if algorithm == "minibatch_kmeans":
+        model = MiniBatchKMeans(
+            n_clusters=n_clusters,
+            random_state=random_state,
+            batch_size=batch_size,
+            n_init=10
+        )
+        cluster_labels = model.fit_predict(matrix_values)
+        probabilities = None
+        
+    elif algorithm == "gmm":
+        model = GaussianMixture(
+            n_components=n_clusters,
+            random_state=random_state,
+            covariance_type='full',
+            n_init=5,
+            max_iter=200
+        )
+        cluster_labels = model.fit_predict(matrix_values)
+        probabilities = model.predict_proba(matrix_values)  # Soft assignments!
     
     # Calculate final metrics
-    inertia = model.inertia_
     silhouette = silhouette_score(matrix_values, cluster_labels)
+    calinski = calinski_harabasz_score(matrix_values, cluster_labels)
+    davies = davies_bouldin_score(matrix_values, cluster_labels)
     
     logger.info(f"Training complete!")
-    logger.info(f"  Inertia: {inertia:,.2f}")
-    logger.info(f"  Silhouette Score: {silhouette:.4f}")
+    logger.info(f"  Silhouette Score: {silhouette:.4f} (higher is better)")
+    logger.info(f"  Calinski-Harabasz: {calinski:.2f} (higher is better)")
+    logger.info(f"  Davies-Bouldin: {davies:.4f} (lower is better)")
     
     # Cluster distribution
     logger.info("-" * 50)
@@ -139,10 +182,25 @@ def train_clustering_model(
         pct = (count / len(cluster_labels)) * 100
         logger.info(f"  Cluster {cluster_id}: {count:,} users ({pct:.1f}%)")
     
-    return model, cluster_labels
+    # For GMM, show average confidence
+    if probabilities is not None:
+        avg_confidence = probabilities.max(axis=1).mean()
+        logger.info("-" * 50)
+        logger.info(f"GMM Average Assignment Confidence: {avg_confidence:.4f}")
+        
+        # Show confidence distribution
+        high_conf = (probabilities.max(axis=1) > 0.8).sum()
+        med_conf = ((probabilities.max(axis=1) > 0.5) & (probabilities.max(axis=1) <= 0.8)).sum()
+        low_conf = (probabilities.max(axis=1) <= 0.5).sum()
+        
+        logger.info(f"  High confidence (>80%): {high_conf:,} users")
+        logger.info(f"  Medium confidence (50-80%): {med_conf:,} users")
+        logger.info(f"  Low confidence (<50%): {low_conf:,} users")
+    
+    return model, cluster_labels, probabilities
 
 
-def save_model(model, config: dict, logger) -> str:
+def save_model(model, config: dict, logger, algorithm: str = "minibatch_kmeans") -> str:
     """
     Saves the trained clustering model to disk.
     
@@ -150,6 +208,7 @@ def save_model(model, config: dict, logger) -> str:
         model: Trained clustering model
         config: Configuration dictionary
         logger: Logger instance
+        algorithm: Algorithm name for filename
     
     Returns:
         Path where model was saved
@@ -158,7 +217,7 @@ def save_model(model, config: dict, logger) -> str:
     output_dir = config["paths"]["models"]
     os.makedirs(output_dir, exist_ok=True)
     
-    model_path = os.path.join(output_dir, "clustering_model.pkl")
+    model_path = os.path.join(output_dir, f"clustering_model_{algorithm}.pkl")
     
     with open(model_path, "wb") as f:
         pickle.dump(model, f)
@@ -172,7 +231,9 @@ def save_cluster_assignments(
     matrix: pd.DataFrame,
     cluster_labels: np.ndarray,
     config: dict,
-    logger
+    logger,
+    algorithm: str = "minibatch_kmeans",
+    probabilities: np.ndarray = None
 ) -> str:
     """
     Saves user cluster assignments to a CSV file.
@@ -182,6 +243,8 @@ def save_cluster_assignments(
         cluster_labels: Array of cluster assignments
         config: Configuration dictionary
         logger: Logger instance
+        algorithm: Algorithm name for filename
+        probabilities: Cluster probabilities (GMM only)
     
     Returns:
         Path where assignments were saved
@@ -196,7 +259,16 @@ def save_cluster_assignments(
         "cluster": cluster_labels
     })
     
-    output_path = os.path.join(output_dir, "cluster_assignments.csv")
+    # Add probabilities if available (GMM)
+    if probabilities is not None:
+        assignments["confidence"] = probabilities.max(axis=1)
+        
+        # Add top 2 cluster probabilities for interpretability
+        top2_clusters = np.argsort(probabilities, axis=1)[:, -2:]
+        assignments["second_best_cluster"] = top2_clusters[:, 0]
+        assignments["second_best_prob"] = probabilities[np.arange(len(probabilities)), top2_clusters[:, 0]]
+    
+    output_path = os.path.join(output_dir, f"cluster_assignments_{algorithm}.csv")
     assignments.to_csv(output_path, index=False)
     
     logger.info(f"Cluster assignments saved to: {output_path}")
@@ -204,6 +276,74 @@ def save_cluster_assignments(
     return output_path
 
 
+def compare_algorithms(
+    matrix: pd.DataFrame,
+    config: dict,
+    logger,
+    k_range: tuple = (3, 20)
+) -> pd.DataFrame:
+    """
+    Compares MiniBatch K-Means and GMM across different k values.
+    
+    Args:
+        matrix: User-genre feature matrix
+        config: Configuration dictionary
+        logger: Logger instance
+        k_range: Tuple of (min_k, max_k) to test
+    
+    Returns:
+        DataFrame with comparison results
+    """
+    
+    logger.info("=" * 60)
+    logger.info("ALGORITHM COMPARISON: MiniBatch K-Means vs GMM")
+    logger.info("=" * 60)
+    
+    # Run both algorithms
+    kmeans_results = find_optimal_clusters(matrix, config, logger, k_range, "minibatch_kmeans")
+    gmm_results = find_optimal_clusters(matrix, config, logger, k_range, "gmm")
+    
+    # Create comparison dataframe
+    comparison = pd.DataFrame({
+        "k": kmeans_results["k_values"],
+        "kmeans_silhouette": kmeans_results["silhouette"],
+        "kmeans_calinski": kmeans_results["calinski_harabasz"],
+        "kmeans_davies": kmeans_results["davies_bouldin"],
+        "gmm_silhouette": gmm_results["silhouette"],
+        "gmm_bic": gmm_results["bic"],
+        "gmm_davies": gmm_results["davies_bouldin"]
+    })
+    
+    # Print comparison table
+    logger.info("-" * 60)
+    logger.info("COMPARISON SUMMARY")
+    logger.info("-" * 60)
+    logger.info(f"{'k':<5} {'KMeans Sil.':<12} {'GMM Sil.':<12} {'KMeans DB':<12} {'GMM DB':<12}")
+    logger.info("-" * 60)
+    
+    for _, row in comparison.iterrows():
+        logger.info(
+            f"{int(row['k']):<5} "
+            f"{row['kmeans_silhouette']:<12.4f} "
+            f"{row['gmm_silhouette']:<12.4f} "
+            f"{row['kmeans_davies']:<12.4f} "
+            f"{row['gmm_davies']:<12.4f}"
+        )
+    
+    # Find best for each algorithm
+    best_kmeans_k = comparison.loc[comparison["kmeans_silhouette"].idxmax(), "k"]
+    best_gmm_k = comparison.loc[comparison["gmm_silhouette"].idxmax(), "k"]
+    
+    logger.info("-" * 60)
+    logger.info(f"Best K-Means k: {int(best_kmeans_k)} (Silhouette: {comparison.loc[comparison['k'] == best_kmeans_k, 'kmeans_silhouette'].values[0]:.4f})")
+    logger.info(f"Best GMM k: {int(best_gmm_k)} (Silhouette: {comparison.loc[comparison['k'] == best_gmm_k, 'gmm_silhouette'].values[0]:.4f})")
+    
+    return comparison, kmeans_results, gmm_results
+
+
+
+
+
 
 
 
@@ -214,7 +354,7 @@ def save_cluster_assignments(
 
 
 """
-Step 4: Cluster users based on genre preferences.
+Step 4: Cluster users - Compare MiniBatch K-Means vs GMM.
 Run from project root: python run_clustering.py
 """
 
@@ -222,7 +362,7 @@ import pandas as pd
 from src.config_loader import load_config
 from src.logger_setup import setup_logger
 from src.models.clustering import (
-    find_optimal_clusters,
+    compare_algorithms,
     train_clustering_model,
     save_model,
     save_cluster_assignments
@@ -246,26 +386,81 @@ def main():
     matrix_path = config["paths"]["processed_data"] + "user_genre_matrix.csv"
     logger.info(f"Loading feature matrix from: {matrix_path}")
     matrix = pd.read_csv(matrix_path, index_col=0)
-    logger.info(f"Loaded matrix: {matrix.shape[0]:,} users × {matrix.shape[1]} genres")
+    logger.info(f"Loaded matrix: {matrix.shape[0]:,} users × {matrix.shape[1]} features")
     
-    # Step 1: Find optimal number of clusters
-    results = find_optimal_clusters(matrix, config, logger, k_range=(3, 15))
+    # Step 1: Compare both algorithms
+    comparison, kmeans_results, gmm_results = compare_algorithms(
+        matrix, config, logger, k_range=(3, 20)
+    )
     
-    # Step 2: Ask user for final k (or use best from silhouette)
-    best_k = results["k_values"][results["silhouette"].index(max(results["silhouette"]))]
-    logger.info(f"Recommended k: {best_k}")
+    # Save comparison results
+    comparison_path = config["paths"]["reports"] + "algorithm_comparison.csv"
+    import os
+    os.makedirs(config["paths"]["reports"], exist_ok=True)
+    comparison.to_csv(comparison_path, index=False)
+    logger.info(f"Comparison saved to: {comparison_path}")
     
-    # Step 3: Train final model with best k
-    model, cluster_labels = train_clustering_model(matrix, config, logger, n_clusters=best_k)
+    # Step 2: Let user choose algorithm and k
+    print("\n" + "=" * 60)
+    print("CHOOSE ALGORITHM AND NUMBER OF CLUSTERS")
+    print("=" * 60)
     
-    # Step 4: Save model and assignments
-    save_model(model, config, logger)
-    save_cluster_assignments(matrix, cluster_labels, config, logger)
+    best_kmeans_idx = kmeans_results["silhouette"].index(max(kmeans_results["silhouette"]))
+    best_gmm_idx = gmm_results["silhouette"].index(max(gmm_results["silhouette"]))
     
-    logger.info("Clustering complete!")
+    print(f"\nMiniBatch K-Means best: k={kmeans_results['k_values'][best_kmeans_idx]} (Silhouette: {kmeans_results['silhouette'][best_kmeans_idx]:.4f})")
+    print(f"GMM best: k={gmm_results['k_values'][best_gmm_idx]} (Silhouette: {gmm_results['silhouette'][best_gmm_idx]:.4f})")
     
-    return model, cluster_labels, results
+    print("\nWhich algorithm? (1 = K-Means, 2 = GMM, 3 = Both)")
+    algo_choice = input("Enter choice (default=3): ").strip()
+    
+    if algo_choice == "" or algo_choice == "3":
+        algorithms = ["minibatch_kmeans", "gmm"]
+    elif algo_choice == "1":
+        algorithms = ["minibatch_kmeans"]
+    elif algo_choice == "2":
+        algorithms = ["gmm"]
+    else:
+        algorithms = ["minibatch_kmeans", "gmm"]
+    
+    # Get k value
+    k_input = input(f"Enter k value (or press Enter for best silhouette): ").strip()
+    
+    results = {}
+    
+    for algorithm in algorithms:
+        if k_input == "":
+            if algorithm == "minibatch_kmeans":
+                chosen_k = kmeans_results['k_values'][best_kmeans_idx]
+            else:
+                chosen_k = gmm_results['k_values'][best_gmm_idx]
+        else:
+            chosen_k = int(k_input)
+        
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Training {algorithm} with k={chosen_k}")
+        logger.info(f"{'='*60}")
+        
+        # Train model
+        model, cluster_labels, probabilities = train_clustering_model(
+            matrix, config, logger, n_clusters=chosen_k, algorithm=algorithm
+        )
+        
+        # Save model and assignments
+        save_model(model, config, logger, algorithm)
+        save_cluster_assignments(matrix, cluster_labels, config, logger, algorithm, probabilities)
+        
+        results[algorithm] = {
+            "model": model,
+            "labels": cluster_labels,
+            "probabilities": probabilities,
+            "k": chosen_k
+        }
+    
+    logger.info("\nClustering complete!")
+    
+    return results, comparison
 
 
 if __name__ == "__main__":
-    model, labels, results = main()
+    results, comparison = main()
