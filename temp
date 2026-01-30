@@ -1,301 +1,445 @@
 """
-Configuration-driven feature engineering module.
-Handles feature selection, normalization, and dimensionality reduction.
+Configuration-driven clustering module.
+Supports multiple algorithms with configurable parameters.
 """
 
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import MinMaxScaler, StandardScaler, normalize
-from sklearn.feature_extraction.text import TfidfTransformer
-from sklearn.decomposition import TruncatedSVD, PCA
-from typing import Tuple, List, Optional
 import os
 import pickle
+from typing import Dict, List, Any, Tuple, Optional
+from sklearn.cluster import MiniBatchKMeans, Birch
+from sklearn.mixture import GaussianMixture
+from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
 
 
-class ConfigFeatureEngineer:
+class ConfigClustering:
     """
-    Configuration-driven feature engineering.
+    Configuration-driven clustering with support for multiple algorithms.
     """
     
     def __init__(self, config: dict, logger):
         self.config = config
         self.logger = logger
-        self.preprocessing_config = config.get("preprocessing", {})
-        self.selection_config = config.get("feature_selection", {})
+        self.clustering_config = config.get("clustering", {})
+        self.eval_config = config.get("evaluation", {})
         
-        # Store fitted transformers for later use (new user assignment)
-        self.fitted_transformers = {}
+        # Store results
+        self.results = {}
+        self.fitted_models = {}
     
-    def select_features(self, matrix: pd.DataFrame) -> pd.DataFrame:
+    def get_enabled_algorithms(self) -> List[dict]:
+        """Returns list of enabled algorithm configurations."""
+        
+        algorithms = self.clustering_config.get("algorithms", [])
+        return [a for a in algorithms if a.get("enabled", True)]
+    
+    def create_model(self, algorithm_config: dict, n_clusters: int) -> Any:
         """
-        Selects features based on configuration.
+        Creates a clustering model based on configuration.
         
         Args:
-            matrix: Full feature matrix
+            algorithm_config: Configuration for the algorithm
+            n_clusters: Number of clusters
         
         Returns:
-            Matrix with selected features only
+            Configured clustering model
         """
         
-        self.logger.info("\n" + "=" * 60)
-        self.logger.info("FEATURE SELECTION")
-        self.logger.info("=" * 60)
+        name = algorithm_config["name"]
+        params = algorithm_config.get("parameters", {})
+        random_state = self.clustering_config.get("random_state", 42)
         
-        mode = self.selection_config.get("mode", "all")
+        if name == "minibatch_kmeans":
+            return MiniBatchKMeans(
+                n_clusters=n_clusters,
+                random_state=random_state,
+                batch_size=params.get("batch_size", 1024),
+                n_init=params.get("n_init", 10),
+                max_iter=params.get("max_iter", 300)
+            )
         
-        self.logger.info(f"  Mode: {mode}")
-        self.logger.info(f"  Initial features: {matrix.shape[1]}")
+        elif name == "gmm":
+            return GaussianMixture(
+                n_components=n_clusters,
+                random_state=random_state,
+                covariance_type=params.get("covariance_type", "full"),
+                n_init=params.get("n_init", 5),
+                max_iter=params.get("max_iter", 200)
+            )
         
-        if mode == "all":
-            selected_matrix = matrix.copy()
-        
-        elif mode == "include":
-            include_list = self.selection_config.get("include_features", [])
-            valid_features = [f for f in include_list if f in matrix.columns]
-            selected_matrix = matrix[valid_features]
-            self.logger.info(f"  Included features: {len(valid_features)}")
-        
-        elif mode == "exclude":
-            exclude_list = self.selection_config.get("exclude_features", [])
-            keep_features = [f for f in matrix.columns if f not in exclude_list]
-            selected_matrix = matrix[keep_features]
-            self.logger.info(f"  Excluded {len(exclude_list)} features")
+        elif name == "birch":
+            return Birch(
+                n_clusters=n_clusters,
+                threshold=params.get("threshold", 0.1),
+                branching_factor=params.get("branching_factor", 50)
+            )
         
         else:
-            self.logger.warning(f"  Unknown mode '{mode}', using all features")
-            selected_matrix = matrix.copy()
-        
-        # Apply variance threshold
-        min_variance = self.selection_config.get("min_variance", 0.0)
-        if min_variance > 0:
-            variances = selected_matrix.var()
-            high_var_features = variances[variances >= min_variance].index
-            before = selected_matrix.shape[1]
-            selected_matrix = selected_matrix[high_var_features]
-            removed = before - selected_matrix.shape[1]
-            if removed > 0:
-                self.logger.info(f"  Variance filter (>= {min_variance}): removed {removed} features")
-        
-        self.logger.info(f"  Final features: {selected_matrix.shape[1]}")
-        
-        return selected_matrix
+            raise ValueError(f"Unknown algorithm: {name}")
     
-    def normalize(self, matrix: pd.DataFrame) -> pd.DataFrame:
+    def calculate_metrics(
+        self,
+        matrix_values: np.ndarray,
+        labels: np.ndarray,
+        model: Any,
+        algorithm_name: str
+    ) -> Dict[str, Optional[float]]:
         """
-        Normalizes the feature matrix based on configuration.
+        Calculates evaluation metrics.
+        
+        Args:
+            matrix_values: Feature matrix
+            labels: Cluster labels
+            model: Fitted model
+            algorithm_name: Name of the algorithm
+        
+        Returns:
+            Dictionary of metric values
+        """
+        
+        metrics = {}
+        
+        # Check we have valid clustering
+        n_unique = len(np.unique(labels))
+        if n_unique < 2:
+            return {"silhouette": None, "calinski_harabasz": None, "davies_bouldin": None}
+        
+        try:
+            metrics["silhouette"] = silhouette_score(matrix_values, labels)
+        except:
+            metrics["silhouette"] = None
+        
+        try:
+            metrics["calinski_harabasz"] = calinski_harabasz_score(matrix_values, labels)
+        except:
+            metrics["calinski_harabasz"] = None
+        
+        try:
+            metrics["davies_bouldin"] = davies_bouldin_score(matrix_values, labels)
+        except:
+            metrics["davies_bouldin"] = None
+        
+        # Algorithm-specific metrics
+        if algorithm_name == "minibatch_kmeans" and hasattr(model, "inertia_"):
+            metrics["inertia"] = model.inertia_
+        
+        if algorithm_name == "gmm" and hasattr(model, "bic"):
+            try:
+                metrics["bic"] = model.bic(matrix_values)
+            except:
+                metrics["bic"] = None
+        
+        return metrics
+    
+    def find_optimal_k(
+        self,
+        matrix: pd.DataFrame,
+        algorithm_config: dict
+    ) -> Dict[str, Any]:
+        """
+        Finds optimal k for a single algorithm.
+        
+        Args:
+            matrix: Feature matrix
+            algorithm_config: Algorithm configuration
+        
+        Returns:
+            Results dictionary
+        """
+        
+        algo_name = algorithm_config["name"]
+        display_name = algorithm_config.get("display_name", algo_name)
+        
+        k_range = self.clustering_config.get("k_range", {"min": 3, "max": 20})
+        k_min, k_max = k_range["min"], k_range["max"]
+        
+        self.logger.info("\n" + "=" * 60)
+        self.logger.info(f"FINDING OPTIMAL K - {display_name}")
+        self.logger.info("=" * 60)
+        self.logger.info(f"Testing k from {k_min} to {k_max}...")
+        
+        results = {
+            "algorithm": algo_name,
+            "display_name": display_name,
+            "k_values": [],
+            "silhouette": [],
+            "calinski_harabasz": [],
+            "davies_bouldin": []
+        }
+        
+        matrix_values = matrix.values
+        
+        for k in range(k_min, k_max + 1):
+            self.logger.info(f"  k={k}...", )
+            
+            try:
+                # Create and fit model
+                model = self.create_model(algorithm_config, k)
+                labels = model.fit_predict(matrix_values)
+                
+                # Check for valid clustering
+                n_unique = len(np.unique(labels))
+                if n_unique < 2:
+                    self.logger.warning(f"    Only {n_unique} cluster(s), skipping")
+                    continue
+                
+                # Calculate metrics
+                metrics = self.calculate_metrics(matrix_values, labels, model, algo_name)
+                
+                results["k_values"].append(k)
+                results["silhouette"].append(metrics.get("silhouette"))
+                results["calinski_harabasz"].append(metrics.get("calinski_harabasz"))
+                results["davies_bouldin"].append(metrics.get("davies_bouldin"))
+                
+                # Log
+                sil = metrics.get("silhouette")
+                db = metrics.get("davies_bouldin")
+                sil_str = f"{sil:.4f}" if sil else "N/A"
+                db_str = f"{db:.4f}" if db else "N/A"
+                self.logger.info(f"    Silhouette: {sil_str} | Davies-Bouldin: {db_str}")
+                
+            except Exception as e:
+                self.logger.warning(f"    Failed: {str(e)}")
+                continue
+        
+        # Find best k
+        if results["k_values"] and results["silhouette"]:
+            valid_scores = [(k, s) for k, s in zip(results["k_values"], results["silhouette"]) if s is not None]
+            if valid_scores:
+                best_k, best_sil = max(valid_scores, key=lambda x: x[1])
+                results["best_k"] = best_k
+                results["best_silhouette"] = best_sil
+                self.logger.info(f"\n  BEST K: {best_k} (Silhouette: {best_sil:.4f})")
+        
+        return results
+    
+    def compare_algorithms(self, matrix: pd.DataFrame) -> Dict[str, Dict]:
+        """
+        Compares all enabled algorithms.
         
         Args:
             matrix: Feature matrix
         
         Returns:
-            Normalized matrix
+            Dictionary with results for all algorithms
         """
         
-        method = self.preprocessing_config.get("normalization", "balanced")
+        self.logger.info("\n" + "=" * 70)
+        self.logger.info("ALGORITHM COMPARISON")
+        self.logger.info("=" * 70)
         
-        self.logger.info("\n" + "=" * 60)
-        self.logger.info(f"NORMALIZATION (method: {method})")
-        self.logger.info("=" * 60)
+        all_results = {}
+        enabled_algorithms = self.get_enabled_algorithms()
         
-        if method == "none":
-            self.logger.info("  Skipping normalization")
-            return matrix
+        self.logger.info(f"Enabled algorithms: {[a['display_name'] for a in enabled_algorithms]}")
         
-        elif method == "minmax":
-            scaler = MinMaxScaler()
-            normalized_values = scaler.fit_transform(matrix)
-            self.fitted_transformers["minmax_scaler"] = scaler
-            self.logger.info("  Applied Min-Max normalization (range: 0 to 1)")
-            self.logger.info("  ⚠ WARNING: MinMax may cause imbalanced clusters")
+        for algo_config in enabled_algorithms:
+            try:
+                results = self.find_optimal_k(matrix, algo_config)
+                all_results[algo_config["name"]] = results
+            except Exception as e:
+                self.logger.error(f"Algorithm {algo_config['name']} failed: {str(e)}")
+                continue
         
-        elif method == "standard":
-            scaler = StandardScaler()
-            normalized_values = scaler.fit_transform(matrix)
-            self.fitted_transformers["standard_scaler"] = scaler
-            self.logger.info("  Applied Standard normalization (mean=0, std=1)")
+        # Display comparison
+        self._display_comparison(all_results)
         
-        elif method == "tfidf":
-            tfidf = TfidfTransformer(norm='l2', use_idf=True, smooth_idf=True)
-            normalized_values = tfidf.fit_transform(matrix).toarray()
-            self.fitted_transformers["tfidf"] = tfidf
-            self._log_tfidf_info(tfidf, matrix.columns)
+        self.results = all_results
+        return all_results
+    
+    def _display_comparison(self, all_results: Dict[str, Dict]):
+        """Displays comparison table."""
         
-        elif method == "log_tfidf":
-            # Step 1: Log transform
-            self.logger.info("  Step 1: Log transform")
-            log_values = np.log1p(matrix.values)
+        if not all_results:
+            return
+        
+        self.logger.info("\n" + "=" * 80)
+        self.logger.info("COMPARISON SUMMARY (Silhouette Scores)")
+        self.logger.info("=" * 80)
+        
+        # Get all k values
+        all_k = set()
+        for results in all_results.values():
+            all_k.update(results.get("k_values", []))
+        all_k = sorted(all_k)
+        
+        # Build header
+        algo_names = list(all_results.keys())
+        header = f"{'k':<5}"
+        for name in algo_names:
+            display = all_results[name].get("display_name", name)[:12]
+            header += f" {display:<14}"
+        header += " Best"
+        
+        self.logger.info(header)
+        self.logger.info("-" * 80)
+        
+        # Build rows
+        for k in all_k:
+            row = f"{k:<5}"
+            scores = {}
             
-            # Step 2: TF-IDF
-            self.logger.info("  Step 2: TF-IDF weighting")
-            tfidf = TfidfTransformer(norm='l2', use_idf=True, smooth_idf=True)
-            normalized_values = tfidf.fit_transform(log_values).toarray()
-            self.fitted_transformers["tfidf"] = tfidf
-            self.logger.info("  Applied Log + TF-IDF normalization")
+            for algo_name in algo_names:
+                results = all_results[algo_name]
+                if k in results.get("k_values", []):
+                    idx = results["k_values"].index(k)
+                    sil = results["silhouette"][idx] if idx < len(results["silhouette"]) else None
+                    if sil is not None:
+                        row += f" {sil:<14.4f}"
+                        scores[algo_name] = sil
+                    else:
+                        row += f" {'N/A':<14}"
+                else:
+                    row += f" {'N/A':<14}"
+            
+            # Find best for this k
+            if scores:
+                best = max(scores, key=scores.get)
+                row += f" {all_results[best].get('display_name', best)[:10]}"
+            
+            self.logger.info(row)
         
-        elif method == "row_normalize":
-            normalized_values = normalize(matrix.values, norm='l2', axis=1)
-            self.logger.info("  Applied L2 row normalization")
+        # Overall best
+        self.logger.info("=" * 80)
+        self.logger.info("\nOVERALL BEST:")
         
-        elif method == "balanced":
-            normalized_values = self._balanced_normalization(matrix)
-        
-        else:
-            self.logger.warning(f"  Unknown method '{method}', using balanced")
-            normalized_values = self._balanced_normalization(matrix)
-        
-        normalized_matrix = pd.DataFrame(
-            normalized_values,
-            index=matrix.index,
-            columns=matrix.columns
-        )
-        
-        return normalized_matrix
+        for algo_name, results in all_results.items():
+            best_k = results.get("best_k", "N/A")
+            best_sil = results.get("best_silhouette", 0)
+            display = results.get("display_name", algo_name)
+            
+            sil_str = f"{best_sil:.4f}" if best_sil else "N/A"
+            self.logger.info(f"  {display}: k={best_k}, Silhouette={sil_str}")
     
-    def _balanced_normalization(self, matrix: pd.DataFrame) -> np.ndarray:
-        """Applies balanced multi-step normalization."""
-        
-        self.logger.info("  Applying BALANCED normalization (recommended):")
-        
-        # Step 1: Log transform
-        self.logger.info("    1. Log transform to reduce skewness")
-        log_values = np.log1p(matrix.values)
-        
-        # Step 2: TF-IDF
-        self.logger.info("    2. TF-IDF to highlight distinctive preferences")
-        tfidf = TfidfTransformer(norm=None, use_idf=True, smooth_idf=True)
-        tfidf_values = tfidf.fit_transform(log_values).toarray()
-        self.fitted_transformers["tfidf"] = tfidf
-        
-        # Step 3: Standard scaling
-        self.logger.info("    3. Standard scaling to center data")
-        scaler = StandardScaler()
-        scaled_values = scaler.fit_transform(tfidf_values)
-        self.fitted_transformers["standard_scaler"] = scaler
-        
-        # Step 4: L2 row normalize
-        self.logger.info("    4. L2 row normalization for equal user weights")
-        final_values = normalize(scaled_values, norm='l2', axis=1)
-        
-        self.logger.info("  ✓ Applied: Log → TF-IDF → Standard → L2")
-        
-        # Log IDF info
-        idf_scores = pd.Series(tfidf.idf_, index=matrix.columns)
-        self.logger.info("\n  Most distinctive features (highest IDF):")
-        for feat, idf in idf_scores.sort_values(ascending=False).head(5).items():
-            self.logger.info(f"    {feat}: {idf:.4f}")
-        self.logger.info("  Most common features (lowest IDF):")
-        for feat, idf in idf_scores.sort_values(ascending=True).head(5).items():
-            self.logger.info(f"    {feat}: {idf:.4f}")
-        
-        return final_values
-    
-    def _log_tfidf_info(self, tfidf, columns):
-        """Logs TF-IDF information."""
-        
-        self.logger.info("  Applied TF-IDF normalization")
-        idf_scores = pd.Series(tfidf.idf_, index=columns)
-        
-        self.logger.info("  Top 5 most distinctive features (highest IDF):")
-        for feat, idf in idf_scores.sort_values(ascending=False).head(5).items():
-            self.logger.info(f"    {feat}: {idf:.4f}")
-    
-    def reduce_dimensions(self, matrix: pd.DataFrame) -> Tuple[pd.DataFrame, Optional[object]]:
+    def train_model(
+        self,
+        matrix: pd.DataFrame,
+        algorithm_name: str,
+        n_clusters: int
+    ) -> Tuple[Any, np.ndarray, Optional[np.ndarray]]:
         """
-        Applies dimensionality reduction based on configuration.
+        Trains a final model.
         
         Args:
-            matrix: Normalized feature matrix
+            matrix: Feature matrix
+            algorithm_name: Algorithm to use
+            n_clusters: Number of clusters
         
         Returns:
-            Tuple of (reduced matrix, fitted reducer model)
+            Tuple of (model, labels, probabilities)
         """
         
-        dr_config = self.preprocessing_config.get("dimensionality_reduction", {})
+        # Find algorithm config
+        algo_config = None
+        for a in self.clustering_config.get("algorithms", []):
+            if a["name"] == algorithm_name:
+                algo_config = a
+                break
         
-        if not dr_config.get("enabled", False):
-            self.logger.info("\n  Dimensionality reduction: DISABLED")
-            return matrix, None
+        if not algo_config:
+            raise ValueError(f"Algorithm not found: {algorithm_name}")
         
-        method = dr_config.get("method", "svd")
-        n_components = dr_config.get("n_components", 50)
-        
-        # Don't reduce if we already have fewer features
-        if matrix.shape[1] <= n_components:
-            self.logger.info(f"\n  Dimensionality reduction: SKIPPED")
-            self.logger.info(f"    Already have {matrix.shape[1]} features (target: {n_components})")
-            return matrix, None
+        display_name = algo_config.get("display_name", algorithm_name)
         
         self.logger.info("\n" + "=" * 60)
-        self.logger.info(f"DIMENSIONALITY REDUCTION (method: {method})")
+        self.logger.info("TRAINING FINAL MODEL")
         self.logger.info("=" * 60)
-        self.logger.info(f"  Original dimensions: {matrix.shape[1]}")
-        self.logger.info(f"  Target dimensions: {n_components}")
+        self.logger.info(f"Algorithm: {display_name}")
+        self.logger.info(f"Clusters: {n_clusters}")
         
-        random_state = self.config.get("clustering", {}).get("random_state", 42)
+        # Create and fit model
+        model = self.create_model(algo_config, n_clusters)
+        labels = model.fit_predict(matrix.values)
         
-        if method == "svd":
-            reducer = TruncatedSVD(
-                n_components=n_components,
-                random_state=random_state,
-                n_iter=10
-            )
-        elif method == "pca":
-            reducer = PCA(
-                n_components=n_components,
-                random_state=random_state
-            )
-        else:
-            self.logger.warning(f"  Unknown method '{method}', using SVD")
-            reducer = TruncatedSVD(n_components=n_components, random_state=random_state)
+        # Get probabilities for GMM
+        probabilities = None
+        if algorithm_name == "gmm":
+            probabilities = model.predict_proba(matrix.values)
         
-        reduced_values = reducer.fit_transform(matrix.values)
-        self.fitted_transformers["dim_reducer"] = reducer
+        # Calculate metrics
+        metrics = self.calculate_metrics(matrix.values, labels, model, algorithm_name)
         
-        # Create column names
-        columns = [f"component_{i+1}" for i in range(n_components)]
+        self.logger.info("\nMetrics:")
+        for name, value in metrics.items():
+            if value is not None:
+                self.logger.info(f"  {name}: {value:.4f}")
         
-        reduced_matrix = pd.DataFrame(
-            reduced_values,
-            index=matrix.index,
-            columns=columns
-        )
+        # Cluster distribution
+        self.logger.info("\nCluster Distribution:")
+        unique, counts = np.unique(labels, return_counts=True)
+        for cid, count in zip(unique, counts):
+            pct = count / len(labels) * 100
+            self.logger.info(f"  Cluster {cid}: {count:,} users ({pct:.1f}%)")
         
-        # Log explained variance
-        explained_var = reducer.explained_variance_ratio_.sum() * 100
-        self.logger.info(f"  Explained variance: {explained_var:.2f}%")
+        self.fitted_models[algorithm_name] = model
         
-        self.logger.info("  Top 5 components:")
-        for i in range(min(5, n_components)):
-            var = reducer.explained_variance_ratio_[i] * 100
-            self.logger.info(f"    Component {i+1}: {var:.2f}%")
-        
-        return reduced_matrix, reducer
+        return model, labels, probabilities
     
-    def save_matrix(self, matrix: pd.DataFrame, filename: str) -> str:
-        """Saves matrix to processed folder."""
+    def save_model(self, model: Any, algorithm_name: str) -> str:
+        """Saves model to disk."""
+        
+        model_dir = self.config["paths"]["models"]
+        os.makedirs(model_dir, exist_ok=True)
+        
+        model_path = os.path.join(model_dir, f"clustering_model_{algorithm_name}.pkl")
+        
+        with open(model_path, "wb") as f:
+            pickle.dump(model, f)
+        
+        self.logger.info(f"Model saved: {model_path}")
+        
+        return model_path
+    
+    def save_assignments(
+        self,
+        matrix: pd.DataFrame,
+        labels: np.ndarray,
+        algorithm_name: str,
+        probabilities: Optional[np.ndarray] = None
+    ) -> str:
+        """Saves cluster assignments."""
         
         output_dir = self.config["paths"]["processed_data"]
         os.makedirs(output_dir, exist_ok=True)
         
-        output_path = os.path.join(output_dir, filename)
-        matrix.to_csv(output_path)
+        assignments = pd.DataFrame({
+            "user_id": matrix.index,
+            "cluster": labels
+        })
         
-        self.logger.info(f"  Saved: {output_path}")
+        if probabilities is not None:
+            assignments["confidence"] = probabilities.max(axis=1)
+        
+        output_path = os.path.join(output_dir, f"cluster_assignments_{algorithm_name}.csv")
+        assignments.to_csv(output_path, index=False)
+        
+        self.logger.info(f"Assignments saved: {output_path}")
         
         return output_path
     
-    def save_transformers(self) -> str:
-        """Saves fitted transformers for later use."""
+    def save_comparison_report(self, all_results: Dict[str, Dict]) -> str:
+        """Saves comparison results to CSV."""
         
-        output_dir = self.config["paths"]["models"]
-        os.makedirs(output_dir, exist_ok=True)
+        report_dir = self.config["paths"]["reports"]
+        os.makedirs(report_dir, exist_ok=True)
         
-        output_path = os.path.join(output_dir, "feature_transformers.pkl")
+        rows = []
+        for algo_name, results in all_results.items():
+            for i, k in enumerate(results.get("k_values", [])):
+                row = {
+                    "algorithm": algo_name,
+                    "k": k,
+                    "silhouette": results["silhouette"][i] if i < len(results["silhouette"]) else None,
+                    "calinski_harabasz": results["calinski_harabasz"][i] if i < len(results["calinski_harabasz"]) else None,
+                    "davies_bouldin": results["davies_bouldin"][i] if i < len(results["davies_bouldin"]) else None
+                }
+                rows.append(row)
         
-        with open(output_path, "wb") as f:
-            pickle.dump(self.fitted_transformers, f)
+        df = pd.DataFrame(rows)
+        output_path = os.path.join(report_dir, "algorithm_comparison.csv")
+        df.to_csv(output_path, index=False)
         
-        self.logger.info(f"  Transformers saved: {output_path}")
+        self.logger.info(f"Comparison report saved: {output_path}")
         
         return output_path
