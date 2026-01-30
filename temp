@@ -1,393 +1,301 @@
 """
-Configuration-driven data loading module.
-Loads pre-cleaned user-genre matrix and optionally joins secondary data.
+Configuration-driven feature engineering module.
+Handles feature selection, normalization, and dimensionality reduction.
 """
 
 import pandas as pd
 import numpy as np
+from sklearn.preprocessing import MinMaxScaler, StandardScaler, normalize
+from sklearn.feature_extraction.text import TfidfTransformer
+from sklearn.decomposition import TruncatedSVD, PCA
+from typing import Tuple, List, Optional
 import os
-from typing import Dict, List, Optional, Tuple
+import pickle
 
 
-class ConfigDataLoader:
+class ConfigFeatureEngineer:
     """
-    Loads primary user-genre matrix and optionally joins secondary data sources.
+    Configuration-driven feature engineering.
     """
     
     def __init__(self, config: dict, logger):
         self.config = config
         self.logger = logger
-        self.primary_data = None
-        self.secondary_data = {}
-        self.merged_data = None
-        self.feature_columns = []
-        self.metadata_columns = []
-        self.id_columns = []
+        self.preprocessing_config = config.get("preprocessing", {})
+        self.selection_config = config.get("feature_selection", {})
+        
+        # Store fitted transformers for later use (new user assignment)
+        self.fitted_transformers = {}
     
-    def load_primary(self) -> pd.DataFrame:
+    def select_features(self, matrix: pd.DataFrame) -> pd.DataFrame:
         """
-        Loads the primary user-genre matrix.
+        Selects features based on configuration.
+        
+        Args:
+            matrix: Full feature matrix
         
         Returns:
-            Primary DataFrame with one row per user
+            Matrix with selected features only
         """
         
+        self.logger.info("\n" + "=" * 60)
+        self.logger.info("FEATURE SELECTION")
         self.logger.info("=" * 60)
-        self.logger.info("LOADING PRIMARY DATA")
-        self.logger.info("=" * 60)
         
-        primary_config = self.config["data_sources"]["primary"]
-        path = primary_config["path"]
+        mode = self.selection_config.get("mode", "all")
         
-        self.logger.info(f"  Path: {path}")
+        self.logger.info(f"  Mode: {mode}")
+        self.logger.info(f"  Initial features: {matrix.shape[1]}")
         
-        # Check file exists
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"Primary data file not found: {path}")
+        if mode == "all":
+            selected_matrix = matrix.copy()
         
-        # Load data
-        df = pd.read_csv(path)
+        elif mode == "include":
+            include_list = self.selection_config.get("include_features", [])
+            valid_features = [f for f in include_list if f in matrix.columns]
+            selected_matrix = matrix[valid_features]
+            self.logger.info(f"  Included features: {len(valid_features)}")
         
-        self.logger.info(f"  Rows: {len(df):,}")
-        self.logger.info(f"  Columns: {len(df.columns)}")
+        elif mode == "exclude":
+            exclude_list = self.selection_config.get("exclude_features", [])
+            keep_features = [f for f in matrix.columns if f not in exclude_list]
+            selected_matrix = matrix[keep_features]
+            self.logger.info(f"  Excluded {len(exclude_list)} features")
         
-        # Identify ID columns
-        user_id_col = primary_config.get("user_id_column", "GUID")
-        device_id_col = primary_config.get("device_id_column", "DUID")
-        
-        self.id_columns = []
-        if user_id_col in df.columns:
-            self.id_columns.append(user_id_col)
-        if device_id_col and device_id_col in df.columns:
-            self.id_columns.append(device_id_col)
-        
-        self.logger.info(f"  ID columns: {self.id_columns}")
-        
-        # Validate uniqueness
-        if user_id_col in df.columns:
-            n_unique = df[user_id_col].nunique()
-            n_total = len(df)
-            
-            if n_unique == n_total:
-                self.logger.info(f"  ✓ User IDs are unique ({n_unique:,} users)")
-            else:
-                self.logger.warning(f"  ⚠ User IDs are NOT unique! {n_unique:,} unique in {n_total:,} rows")
-        
-        # Identify feature columns
-        feature_cols_config = primary_config.get("feature_columns", "auto")
-        exclude_cols = primary_config.get("exclude_columns", [])
-        
-        if feature_cols_config == "auto":
-            # Auto-detect: all numeric columns except IDs and excluded
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            self.feature_columns = [
-                c for c in numeric_cols 
-                if c not in self.id_columns and c not in exclude_cols
-            ]
-            self.logger.info(f"  Auto-detected {len(self.feature_columns)} feature columns (numeric)")
         else:
-            # Use specified columns
-            self.feature_columns = [
-                c for c in feature_cols_config 
-                if c in df.columns and c not in exclude_cols
-            ]
-            self.logger.info(f"  Using {len(self.feature_columns)} specified feature columns")
+            self.logger.warning(f"  Unknown mode '{mode}', using all features")
+            selected_matrix = matrix.copy()
         
-        # Log feature summary
-        self.logger.info(f"\n  Feature columns preview (first 10):")
-        for col in self.feature_columns[:10]:
-            self.logger.info(f"    - {col}")
-        if len(self.feature_columns) > 10:
-            self.logger.info(f"    ... and {len(self.feature_columns) - 10} more")
+        # Apply variance threshold
+        min_variance = self.selection_config.get("min_variance", 0.0)
+        if min_variance > 0:
+            variances = selected_matrix.var()
+            high_var_features = variances[variances >= min_variance].index
+            before = selected_matrix.shape[1]
+            selected_matrix = selected_matrix[high_var_features]
+            removed = before - selected_matrix.shape[1]
+            if removed > 0:
+                self.logger.info(f"  Variance filter (>= {min_variance}): removed {removed} features")
         
-        self.primary_data = df
-        return df
+        self.logger.info(f"  Final features: {selected_matrix.shape[1]}")
+        
+        return selected_matrix
     
-    def load_secondary(self) -> Dict[str, pd.DataFrame]:
+    def normalize(self, matrix: pd.DataFrame) -> pd.DataFrame:
         """
-        Loads all enabled secondary data sources.
+        Normalizes the feature matrix based on configuration.
+        
+        Args:
+            matrix: Feature matrix
         
         Returns:
-            Dictionary mapping source names to DataFrames
+            Normalized matrix
         """
         
-        secondary_config = self.config["data_sources"].get("secondary", [])
-        
-        if not secondary_config:
-            self.logger.info("\n  No secondary data sources configured")
-            return {}
-        
-        enabled_sources = [s for s in secondary_config if s.get("enabled", False)]
-        
-        if not enabled_sources:
-            self.logger.info("\n  No secondary data sources enabled")
-            return {}
+        method = self.preprocessing_config.get("normalization", "balanced")
         
         self.logger.info("\n" + "=" * 60)
-        self.logger.info("LOADING SECONDARY DATA")
+        self.logger.info(f"NORMALIZATION (method: {method})")
         self.logger.info("=" * 60)
         
-        for source in enabled_sources:
-            name = source["name"]
-            path = source["path"]
-            
-            self.logger.info(f"\n  Loading: {name}")
-            self.logger.info(f"    Path: {path}")
-            
-            if not os.path.exists(path):
-                self.logger.warning(f"    File not found, skipping: {path}")
-                continue
-            
-            df = pd.read_csv(path)
-            
-            self.logger.info(f"    Rows: {len(df):,}")
-            self.logger.info(f"    Columns: {list(df.columns)}")
-            
-            # Validate join key
-            join_key = source.get("join_key")
-            if join_key and join_key in df.columns:
-                n_unique = df[join_key].nunique()
-                n_total = len(df)
-                
-                if n_unique == n_total:
-                    self.logger.info(f"    ✓ Join key '{join_key}' is unique")
-                else:
-                    self.logger.warning(f"    ⚠ Join key '{join_key}' has duplicates!")
-                    self.logger.warning(f"      Taking first occurrence for each key")
-                    df = df.groupby(join_key).first().reset_index()
-            
-            self.secondary_data[name] = {
-                "data": df,
-                "config": source
-            }
+        if method == "none":
+            self.logger.info("  Skipping normalization")
+            return matrix
         
-        return self.secondary_data
+        elif method == "minmax":
+            scaler = MinMaxScaler()
+            normalized_values = scaler.fit_transform(matrix)
+            self.fitted_transformers["minmax_scaler"] = scaler
+            self.logger.info("  Applied Min-Max normalization (range: 0 to 1)")
+            self.logger.info("  ⚠ WARNING: MinMax may cause imbalanced clusters")
+        
+        elif method == "standard":
+            scaler = StandardScaler()
+            normalized_values = scaler.fit_transform(matrix)
+            self.fitted_transformers["standard_scaler"] = scaler
+            self.logger.info("  Applied Standard normalization (mean=0, std=1)")
+        
+        elif method == "tfidf":
+            tfidf = TfidfTransformer(norm='l2', use_idf=True, smooth_idf=True)
+            normalized_values = tfidf.fit_transform(matrix).toarray()
+            self.fitted_transformers["tfidf"] = tfidf
+            self._log_tfidf_info(tfidf, matrix.columns)
+        
+        elif method == "log_tfidf":
+            # Step 1: Log transform
+            self.logger.info("  Step 1: Log transform")
+            log_values = np.log1p(matrix.values)
+            
+            # Step 2: TF-IDF
+            self.logger.info("  Step 2: TF-IDF weighting")
+            tfidf = TfidfTransformer(norm='l2', use_idf=True, smooth_idf=True)
+            normalized_values = tfidf.fit_transform(log_values).toarray()
+            self.fitted_transformers["tfidf"] = tfidf
+            self.logger.info("  Applied Log + TF-IDF normalization")
+        
+        elif method == "row_normalize":
+            normalized_values = normalize(matrix.values, norm='l2', axis=1)
+            self.logger.info("  Applied L2 row normalization")
+        
+        elif method == "balanced":
+            normalized_values = self._balanced_normalization(matrix)
+        
+        else:
+            self.logger.warning(f"  Unknown method '{method}', using balanced")
+            normalized_values = self._balanced_normalization(matrix)
+        
+        normalized_matrix = pd.DataFrame(
+            normalized_values,
+            index=matrix.index,
+            columns=matrix.columns
+        )
+        
+        return normalized_matrix
     
-    def merge_all(self) -> pd.DataFrame:
+    def _balanced_normalization(self, matrix: pd.DataFrame) -> np.ndarray:
+        """Applies balanced multi-step normalization."""
+        
+        self.logger.info("  Applying BALANCED normalization (recommended):")
+        
+        # Step 1: Log transform
+        self.logger.info("    1. Log transform to reduce skewness")
+        log_values = np.log1p(matrix.values)
+        
+        # Step 2: TF-IDF
+        self.logger.info("    2. TF-IDF to highlight distinctive preferences")
+        tfidf = TfidfTransformer(norm=None, use_idf=True, smooth_idf=True)
+        tfidf_values = tfidf.fit_transform(log_values).toarray()
+        self.fitted_transformers["tfidf"] = tfidf
+        
+        # Step 3: Standard scaling
+        self.logger.info("    3. Standard scaling to center data")
+        scaler = StandardScaler()
+        scaled_values = scaler.fit_transform(tfidf_values)
+        self.fitted_transformers["standard_scaler"] = scaler
+        
+        # Step 4: L2 row normalize
+        self.logger.info("    4. L2 row normalization for equal user weights")
+        final_values = normalize(scaled_values, norm='l2', axis=1)
+        
+        self.logger.info("  ✓ Applied: Log → TF-IDF → Standard → L2")
+        
+        # Log IDF info
+        idf_scores = pd.Series(tfidf.idf_, index=matrix.columns)
+        self.logger.info("\n  Most distinctive features (highest IDF):")
+        for feat, idf in idf_scores.sort_values(ascending=False).head(5).items():
+            self.logger.info(f"    {feat}: {idf:.4f}")
+        self.logger.info("  Most common features (lowest IDF):")
+        for feat, idf in idf_scores.sort_values(ascending=True).head(5).items():
+            self.logger.info(f"    {feat}: {idf:.4f}")
+        
+        return final_values
+    
+    def _log_tfidf_info(self, tfidf, columns):
+        """Logs TF-IDF information."""
+        
+        self.logger.info("  Applied TF-IDF normalization")
+        idf_scores = pd.Series(tfidf.idf_, index=columns)
+        
+        self.logger.info("  Top 5 most distinctive features (highest IDF):")
+        for feat, idf in idf_scores.sort_values(ascending=False).head(5).items():
+            self.logger.info(f"    {feat}: {idf:.4f}")
+    
+    def reduce_dimensions(self, matrix: pd.DataFrame) -> Tuple[pd.DataFrame, Optional[object]]:
         """
-        Merges primary data with all secondary sources.
+        Applies dimensionality reduction based on configuration.
+        
+        Args:
+            matrix: Normalized feature matrix
         
         Returns:
-            Merged DataFrame
+            Tuple of (reduced matrix, fitted reducer model)
         """
         
-        if self.primary_data is None:
-            self.load_primary()
+        dr_config = self.preprocessing_config.get("dimensionality_reduction", {})
         
-        if not self.secondary_data:
-            self.load_secondary()
+        if not dr_config.get("enabled", False):
+            self.logger.info("\n  Dimensionality reduction: DISABLED")
+            return matrix, None
         
-        self.merged_data = self.primary_data.copy()
+        method = dr_config.get("method", "svd")
+        n_components = dr_config.get("n_components", 50)
         
-        if not self.secondary_data:
-            self.logger.info("\n  No secondary data to merge")
-            return self.merged_data
+        # Don't reduce if we already have fewer features
+        if matrix.shape[1] <= n_components:
+            self.logger.info(f"\n  Dimensionality reduction: SKIPPED")
+            self.logger.info(f"    Already have {matrix.shape[1]} features (target: {n_components})")
+            return matrix, None
         
         self.logger.info("\n" + "=" * 60)
-        self.logger.info("MERGING DATA SOURCES")
+        self.logger.info(f"DIMENSIONALITY REDUCTION (method: {method})")
         self.logger.info("=" * 60)
+        self.logger.info(f"  Original dimensions: {matrix.shape[1]}")
+        self.logger.info(f"  Target dimensions: {n_components}")
         
-        for name, source_info in self.secondary_data.items():
-            df = source_info["data"]
-            config = source_info["config"]
-            
-            join_key = config.get("join_key")
-            columns_to_use = config.get("columns_to_use", [])
-            usage = config.get("usage", "metadata")
-            encoding = config.get("encoding", "none")
-            
-            self.logger.info(f"\n  Merging: {name}")
-            self.logger.info(f"    Join key: {join_key}")
-            self.logger.info(f"    Columns: {columns_to_use}")
-            self.logger.info(f"    Usage: {usage}")
-            
-            # Check join key exists in both
-            if join_key not in self.merged_data.columns:
-                self.logger.warning(f"    Join key '{join_key}' not in primary data, skipping")
-                continue
-            
-            if join_key not in df.columns:
-                self.logger.warning(f"    Join key '{join_key}' not in secondary data, skipping")
-                continue
-            
-            # Select columns to merge
-            cols_to_merge = [join_key] + [c for c in columns_to_use if c in df.columns]
-            df_subset = df[cols_to_merge].copy()
-            
-            # Encode categorical columns if needed
-            if encoding == "onehot":
-                for col in columns_to_use:
-                    if col in df_subset.columns and df_subset[col].dtype == 'object':
-                        self.logger.info(f"    One-hot encoding: {col}")
-                        dummies = pd.get_dummies(df_subset[col], prefix=col)
-                        df_subset = pd.concat([df_subset.drop(columns=[col]), dummies], axis=1)
-                        
-                        if usage == "feature":
-                            self.feature_columns.extend(dummies.columns.tolist())
-            
-            elif encoding == "label":
-                for col in columns_to_use:
-                    if col in df_subset.columns and df_subset[col].dtype == 'object':
-                        self.logger.info(f"    Label encoding: {col}")
-                        df_subset[col] = df_subset[col].astype('category').cat.codes
-                        
-                        if usage == "feature":
-                            self.feature_columns.append(col)
-            
-            else:  # encoding == "none"
-                if usage == "feature":
-                    numeric_cols = df_subset.select_dtypes(include=[np.number]).columns
-                    new_features = [c for c in numeric_cols if c != join_key]
-                    self.feature_columns.extend(new_features)
-            
-            # Track metadata columns
-            if usage == "metadata":
-                new_cols = [c for c in df_subset.columns if c != join_key]
-                self.metadata_columns.extend(new_cols)
-            
-            # Perform merge
-            before_rows = len(self.merged_data)
-            
-            self.merged_data = self.merged_data.merge(
-                df_subset,
-                on=join_key,
-                how="left"
+        random_state = self.config.get("clustering", {}).get("random_state", 42)
+        
+        if method == "svd":
+            reducer = TruncatedSVD(
+                n_components=n_components,
+                random_state=random_state,
+                n_iter=10
             )
-            
-            after_rows = len(self.merged_data)
-            
-            if after_rows != before_rows:
-                self.logger.warning(f"    Row count changed: {before_rows:,} → {after_rows:,}")
-            else:
-                self.logger.info(f"    ✓ Merge successful ({after_rows:,} rows)")
-        
-        self.logger.info(f"\n  Final merged data: {len(self.merged_data):,} rows, {len(self.merged_data.columns)} columns")
-        
-        return self.merged_data
-    
-    def get_feature_matrix(self) -> Tuple[pd.DataFrame, List[str]]:
-        """
-        Returns the feature matrix ready for clustering.
-        
-        Returns:
-            Tuple of (feature_matrix, feature_column_names)
-        """
-        
-        if self.merged_data is None:
-            self.merge_all()
-        
-        # Get user ID column for index
-        user_id_col = self.config["data_sources"]["primary"].get("user_id_column", "GUID")
-        
-        # Select only feature columns
-        available_features = [c for c in self.feature_columns if c in self.merged_data.columns]
-        
-        # Create feature matrix with user_id as index
-        if user_id_col in self.merged_data.columns:
-            feature_matrix = self.merged_data.set_index(user_id_col)[available_features]
+        elif method == "pca":
+            reducer = PCA(
+                n_components=n_components,
+                random_state=random_state
+            )
         else:
-            feature_matrix = self.merged_data[available_features]
+            self.logger.warning(f"  Unknown method '{method}', using SVD")
+            reducer = TruncatedSVD(n_components=n_components, random_state=random_state)
         
-        self.logger.info(f"\n  Feature matrix: {feature_matrix.shape[0]:,} users × {feature_matrix.shape[1]} features")
+        reduced_values = reducer.fit_transform(matrix.values)
+        self.fitted_transformers["dim_reducer"] = reducer
         
-        return feature_matrix, available_features
+        # Create column names
+        columns = [f"component_{i+1}" for i in range(n_components)]
+        
+        reduced_matrix = pd.DataFrame(
+            reduced_values,
+            index=matrix.index,
+            columns=columns
+        )
+        
+        # Log explained variance
+        explained_var = reducer.explained_variance_ratio_.sum() * 100
+        self.logger.info(f"  Explained variance: {explained_var:.2f}%")
+        
+        self.logger.info("  Top 5 components:")
+        for i in range(min(5, n_components)):
+            var = reducer.explained_variance_ratio_[i] * 100
+            self.logger.info(f"    Component {i+1}: {var:.2f}%")
+        
+        return reduced_matrix, reducer
     
-    def save_data(self, df: pd.DataFrame, filename: str) -> str:
-        """Saves dataframe to processed folder."""
+    def save_matrix(self, matrix: pd.DataFrame, filename: str) -> str:
+        """Saves matrix to processed folder."""
         
         output_dir = self.config["paths"]["processed_data"]
         os.makedirs(output_dir, exist_ok=True)
         
         output_path = os.path.join(output_dir, filename)
-        df.to_csv(output_path, index=True)
+        matrix.to_csv(output_path)
         
         self.logger.info(f"  Saved: {output_path}")
         
         return output_path
-
-
-class PrimaryDataValidator:
-    """
-    Validates the primary data file.
-    """
     
-    def __init__(self, config: dict, logger):
-        self.config = config
-        self.logger = logger
-    
-    def validate(self, df: pd.DataFrame) -> dict:
-        """
-        Validates the primary data and returns a report.
-        """
+    def save_transformers(self) -> str:
+        """Saves fitted transformers for later use."""
         
-        self.logger.info("\n" + "-" * 60)
-        self.logger.info("PRIMARY DATA VALIDATION")
-        self.logger.info("-" * 60)
+        output_dir = self.config["paths"]["models"]
+        os.makedirs(output_dir, exist_ok=True)
         
-        report = {
-            "valid": True,
-            "issues": [],
-            "warnings": []
-        }
+        output_path = os.path.join(output_dir, "feature_transformers.pkl")
         
-        primary_config = self.config["data_sources"]["primary"]
-        user_id_col = primary_config.get("user_id_column", "GUID")
+        with open(output_path, "wb") as f:
+            pickle.dump(self.fitted_transformers, f)
         
-        # Check 1: User ID column exists
-        if user_id_col not in df.columns:
-            report["valid"] = False
-            report["issues"].append(f"User ID column '{user_id_col}' not found")
-            self.logger.error(f"  ✗ User ID column '{user_id_col}' not found")
-        else:
-            self.logger.info(f"  ✓ User ID column exists")
+        self.logger.info(f"  Transformers saved: {output_path}")
         
-        # Check 2: User IDs are unique
-        if user_id_col in df.columns:
-            n_unique = df[user_id_col].nunique()
-            n_total = len(df)
-            
-            if n_unique != n_total:
-                report["warnings"].append(f"Duplicate user IDs: {n_total - n_unique} duplicates")
-                self.logger.warning(f"  ⚠ Duplicate user IDs: {n_total - n_unique:,} duplicates")
-            else:
-                self.logger.info(f"  ✓ User IDs are unique")
-        
-        # Check 3: No missing user IDs
-        if user_id_col in df.columns:
-            missing = df[user_id_col].isna().sum()
-            if missing > 0:
-                report["warnings"].append(f"Missing user IDs: {missing}")
-                self.logger.warning(f"  ⚠ Missing user IDs: {missing:,}")
-            else:
-                self.logger.info(f"  ✓ No missing user IDs")
-        
-        # Check 4: Has numeric feature columns
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        non_id_numeric = [c for c in numeric_cols if c not in [user_id_col]]
-        
-        if len(non_id_numeric) == 0:
-            report["valid"] = False
-            report["issues"].append("No numeric feature columns found")
-            self.logger.error(f"  ✗ No numeric feature columns found")
-        else:
-            self.logger.info(f"  ✓ Found {len(non_id_numeric)} numeric feature columns")
-        
-        # Check 5: No all-zero rows
-        if len(non_id_numeric) > 0:
-            feature_data = df[non_id_numeric]
-            zero_rows = (feature_data == 0).all(axis=1).sum()
-            
-            if zero_rows > 0:
-                pct = zero_rows / len(df) * 100
-                report["warnings"].append(f"All-zero rows: {zero_rows} ({pct:.1f}%)")
-                self.logger.warning(f"  ⚠ All-zero rows: {zero_rows:,} ({pct:.1f}%)")
-            else:
-                self.logger.info(f"  ✓ No all-zero rows")
-        
-        # Summary
-        if report["valid"] and not report["issues"]:
-            self.logger.info(f"\n  ✓ Validation PASSED")
-        else:
-            self.logger.error(f"\n  ✗ Validation FAILED")
-        
-        return report
+        return output_path
