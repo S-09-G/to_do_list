@@ -1,445 +1,265 @@
 """
-Configuration-driven clustering module.
-Supports multiple algorithms with configurable parameters.
+CONFIGURATION-DRIVEN CLUSTERING PIPELINE
+
+Usage:
+    python run_pipeline.py                    # Run full pipeline with menu
+    python run_pipeline.py --step load        # Only load data
+    python run_pipeline.py --step features    # Only feature engineering
+    python run_pipeline.py --step clustering  # Only clustering
+    python run_pipeline.py --validate         # Validate data only
 """
 
+import argparse
 import pandas as pd
-import numpy as np
 import os
-import pickle
-from typing import Dict, List, Any, Tuple, Optional
-from sklearn.cluster import MiniBatchKMeans, Birch
-from sklearn.mixture import GaussianMixture
-from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
+from src.config_loader import load_config
+from src.logger_setup import setup_logger
+from src.data_processing.config_data_loader import ConfigDataLoader, PrimaryDataValidator
+from src.features.config_feature_engineer import ConfigFeatureEngineer
+from src.models.config_clustering import ConfigClustering
 
 
-class ConfigClustering:
-    """
-    Configuration-driven clustering with support for multiple algorithms.
-    """
+def run_data_pipeline(config: dict, logger) -> pd.DataFrame:
+    """Phase 1: Load and validate data."""
     
-    def __init__(self, config: dict, logger):
-        self.config = config
-        self.logger = logger
-        self.clustering_config = config.get("clustering", {})
-        self.eval_config = config.get("evaluation", {})
-        
-        # Store results
-        self.results = {}
-        self.fitted_models = {}
+    logger.info("\n" + "#" * 70)
+    logger.info("# PHASE 1: DATA LOADING")
+    logger.info("#" * 70)
     
-    def get_enabled_algorithms(self) -> List[dict]:
-        """Returns list of enabled algorithm configurations."""
-        
-        algorithms = self.clustering_config.get("algorithms", [])
-        return [a for a in algorithms if a.get("enabled", True)]
+    # Load data
+    loader = ConfigDataLoader(config, logger)
+    primary_df = loader.load_primary()
     
-    def create_model(self, algorithm_config: dict, n_clusters: int) -> Any:
-        """
-        Creates a clustering model based on configuration.
-        
-        Args:
-            algorithm_config: Configuration for the algorithm
-            n_clusters: Number of clusters
-        
-        Returns:
-            Configured clustering model
-        """
-        
-        name = algorithm_config["name"]
-        params = algorithm_config.get("parameters", {})
-        random_state = self.clustering_config.get("random_state", 42)
-        
-        if name == "minibatch_kmeans":
-            return MiniBatchKMeans(
-                n_clusters=n_clusters,
-                random_state=random_state,
-                batch_size=params.get("batch_size", 1024),
-                n_init=params.get("n_init", 10),
-                max_iter=params.get("max_iter", 300)
-            )
-        
-        elif name == "gmm":
-            return GaussianMixture(
-                n_components=n_clusters,
-                random_state=random_state,
-                covariance_type=params.get("covariance_type", "full"),
-                n_init=params.get("n_init", 5),
-                max_iter=params.get("max_iter", 200)
-            )
-        
-        elif name == "birch":
-            return Birch(
-                n_clusters=n_clusters,
-                threshold=params.get("threshold", 0.1),
-                branching_factor=params.get("branching_factor", 50)
-            )
-        
-        else:
-            raise ValueError(f"Unknown algorithm: {name}")
+    # Validate
+    validator = PrimaryDataValidator(config, logger)
+    report = validator.validate(primary_df)
     
-    def calculate_metrics(
-        self,
-        matrix_values: np.ndarray,
-        labels: np.ndarray,
-        model: Any,
-        algorithm_name: str
-    ) -> Dict[str, Optional[float]]:
-        """
-        Calculates evaluation metrics.
-        
-        Args:
-            matrix_values: Feature matrix
-            labels: Cluster labels
-            model: Fitted model
-            algorithm_name: Name of the algorithm
-        
-        Returns:
-            Dictionary of metric values
-        """
-        
-        metrics = {}
-        
-        # Check we have valid clustering
-        n_unique = len(np.unique(labels))
-        if n_unique < 2:
-            return {"silhouette": None, "calinski_harabasz": None, "davies_bouldin": None}
-        
-        try:
-            metrics["silhouette"] = silhouette_score(matrix_values, labels)
-        except:
-            metrics["silhouette"] = None
-        
-        try:
-            metrics["calinski_harabasz"] = calinski_harabasz_score(matrix_values, labels)
-        except:
-            metrics["calinski_harabasz"] = None
-        
-        try:
-            metrics["davies_bouldin"] = davies_bouldin_score(matrix_values, labels)
-        except:
-            metrics["davies_bouldin"] = None
-        
-        # Algorithm-specific metrics
-        if algorithm_name == "minibatch_kmeans" and hasattr(model, "inertia_"):
-            metrics["inertia"] = model.inertia_
-        
-        if algorithm_name == "gmm" and hasattr(model, "bic"):
-            try:
-                metrics["bic"] = model.bic(matrix_values)
-            except:
-                metrics["bic"] = None
-        
-        return metrics
+    if not report["valid"]:
+        logger.error("Data validation failed! Please fix issues.")
+        raise ValueError("Data validation failed")
     
-    def find_optimal_k(
-        self,
-        matrix: pd.DataFrame,
-        algorithm_config: dict
-    ) -> Dict[str, Any]:
-        """
-        Finds optimal k for a single algorithm.
+    # Load secondary (if any enabled)
+    loader.load_secondary()
+    merged_df = loader.merge_all()
+    
+    # Get feature matrix
+    feature_matrix, feature_cols = loader.get_feature_matrix()
+    
+    # Save
+    if config.get("output", {}).get("save_intermediate", True):
+        output_dir = config["paths"]["processed_data"]
+        os.makedirs(output_dir, exist_ok=True)
         
-        Args:
-            matrix: Feature matrix
-            algorithm_config: Algorithm configuration
+        feature_path = os.path.join(output_dir, "feature_matrix_raw.csv")
+        feature_matrix.to_csv(feature_path)
+        logger.info(f"\nFeature matrix saved: {feature_path}")
+    
+    return feature_matrix
+
+
+def run_feature_pipeline(config: dict, logger, matrix: pd.DataFrame = None) -> pd.DataFrame:
+    """Phase 2: Feature engineering."""
+    
+    logger.info("\n" + "#" * 70)
+    logger.info("# PHASE 2: FEATURE ENGINEERING")
+    logger.info("#" * 70)
+    
+    # Load if not provided
+    if matrix is None:
+        matrix_path = os.path.join(config["paths"]["processed_data"], "feature_matrix_raw.csv")
+        logger.info(f"Loading from: {matrix_path}")
+        matrix = pd.read_csv(matrix_path, index_col=0)
+    
+    logger.info(f"Input: {matrix.shape[0]:,} users × {matrix.shape[1]} features")
+    
+    # Feature engineering
+    engineer = ConfigFeatureEngineer(config, logger)
+    
+    # Select features
+    matrix = engineer.select_features(matrix)
+    
+    # Normalize
+    normalized_matrix = engineer.normalize(matrix)
+    
+    # Save normalized
+    if config.get("output", {}).get("save_intermediate", True):
+        engineer.save_matrix(normalized_matrix, "feature_matrix_normalized.csv")
+    
+    # Dimensionality reduction
+    final_matrix, reducer = engineer.reduce_dimensions(normalized_matrix)
+    
+    # Save final
+    engineer.save_matrix(final_matrix, "feature_matrix_final.csv")
+    
+    # Save transformers
+    if config.get("output", {}).get("save_models", True):
+        engineer.save_transformers()
+    
+    return final_matrix
+
+
+def run_clustering_pipeline(config: dict, logger, matrix: pd.DataFrame = None):
+    """Phase 3: Clustering with interactive menu."""
+    
+    logger.info("\n" + "#" * 70)
+    logger.info("# PHASE 3: CLUSTERING")
+    logger.info("#" * 70)
+    
+    # Load if not provided
+    if matrix is None:
+        matrix_path = os.path.join(config["paths"]["processed_data"], "feature_matrix_final.csv")
+        logger.info(f"Loading from: {matrix_path}")
+        matrix = pd.read_csv(matrix_path, index_col=0)
+    
+    logger.info(f"Matrix: {matrix.shape[0]:,} users × {matrix.shape[1]} features")
+    
+    # Initialize clustering
+    clusterer = ConfigClustering(config, logger)
+    
+    # Interactive menu
+    print("\n" + "=" * 60)
+    print("CLUSTERING OPTIONS")
+    print("=" * 60)
+    print("\n1. Compare all enabled algorithms")
+    print("2. Run single algorithm (find best k)")
+    print("3. Train final model (specify algorithm and k)")
+    print("4. Exit")
+    
+    enabled = clusterer.get_enabled_algorithms()
+    print(f"\nEnabled algorithms: {[a['display_name'] for a in enabled]}")
+    print("=" * 60)
+    
+    choice = input("\nEnter choice (1/2/3/4): ").strip()
+    
+    if choice == "4":
+        return None
+    
+    elif choice == "1":
+        # Compare all
+        all_results = clusterer.compare_algorithms(matrix)
+        clusterer.save_comparison_report(all_results)
         
-        Returns:
-            Results dictionary
-        """
+        # Offer to train
+        train = input("\nTrain a final model? (y/n): ").strip().lower()
+        if train == 'y':
+            _interactive_train(clusterer, matrix, all_results, enabled)
         
-        algo_name = algorithm_config["name"]
-        display_name = algorithm_config.get("display_name", algo_name)
+        return all_results
+    
+    elif choice == "2":
+        # Single algorithm
+        algo_config = _select_algorithm(enabled)
+        results = clusterer.find_optimal_k(matrix, algo_config)
         
-        k_range = self.clustering_config.get("k_range", {"min": 3, "max": 20})
-        k_min, k_max = k_range["min"], k_range["max"]
-        
-        self.logger.info("\n" + "=" * 60)
-        self.logger.info(f"FINDING OPTIMAL K - {display_name}")
-        self.logger.info("=" * 60)
-        self.logger.info(f"Testing k from {k_min} to {k_max}...")
-        
-        results = {
-            "algorithm": algo_name,
-            "display_name": display_name,
-            "k_values": [],
-            "silhouette": [],
-            "calinski_harabasz": [],
-            "davies_bouldin": []
-        }
-        
-        matrix_values = matrix.values
-        
-        for k in range(k_min, k_max + 1):
-            self.logger.info(f"  k={k}...", )
+        train = input("\nTrain final model? (y/n): ").strip().lower()
+        if train == 'y':
+            suggested_k = results.get("best_k", 10)
+            k = input(f"Enter k (suggested={suggested_k}): ").strip()
+            k = int(k) if k else suggested_k
             
-            try:
-                # Create and fit model
-                model = self.create_model(algorithm_config, k)
-                labels = model.fit_predict(matrix_values)
-                
-                # Check for valid clustering
-                n_unique = len(np.unique(labels))
-                if n_unique < 2:
-                    self.logger.warning(f"    Only {n_unique} cluster(s), skipping")
-                    continue
-                
-                # Calculate metrics
-                metrics = self.calculate_metrics(matrix_values, labels, model, algo_name)
-                
-                results["k_values"].append(k)
-                results["silhouette"].append(metrics.get("silhouette"))
-                results["calinski_harabasz"].append(metrics.get("calinski_harabasz"))
-                results["davies_bouldin"].append(metrics.get("davies_bouldin"))
-                
-                # Log
-                sil = metrics.get("silhouette")
-                db = metrics.get("davies_bouldin")
-                sil_str = f"{sil:.4f}" if sil else "N/A"
-                db_str = f"{db:.4f}" if db else "N/A"
-                self.logger.info(f"    Silhouette: {sil_str} | Davies-Bouldin: {db_str}")
-                
-            except Exception as e:
-                self.logger.warning(f"    Failed: {str(e)}")
-                continue
-        
-        # Find best k
-        if results["k_values"] and results["silhouette"]:
-            valid_scores = [(k, s) for k, s in zip(results["k_values"], results["silhouette"]) if s is not None]
-            if valid_scores:
-                best_k, best_sil = max(valid_scores, key=lambda x: x[1])
-                results["best_k"] = best_k
-                results["best_silhouette"] = best_sil
-                self.logger.info(f"\n  BEST K: {best_k} (Silhouette: {best_sil:.4f})")
+            model, labels, probs = clusterer.train_model(matrix, algo_config["name"], k)
+            clusterer.save_model(model, algo_config["name"])
+            clusterer.save_assignments(matrix, labels, algo_config["name"], probs)
         
         return results
     
-    def compare_algorithms(self, matrix: pd.DataFrame) -> Dict[str, Dict]:
-        """
-        Compares all enabled algorithms.
+    elif choice == "3":
+        # Direct train
+        algo_config = _select_algorithm(enabled)
+        k = int(input("Enter number of clusters (k): ").strip())
         
-        Args:
-            matrix: Feature matrix
+        model, labels, probs = clusterer.train_model(matrix, algo_config["name"], k)
+        clusterer.save_model(model, algo_config["name"])
+        clusterer.save_assignments(matrix, labels, algo_config["name"], probs)
         
-        Returns:
-            Dictionary with results for all algorithms
-        """
-        
-        self.logger.info("\n" + "=" * 70)
-        self.logger.info("ALGORITHM COMPARISON")
-        self.logger.info("=" * 70)
-        
-        all_results = {}
-        enabled_algorithms = self.get_enabled_algorithms()
-        
-        self.logger.info(f"Enabled algorithms: {[a['display_name'] for a in enabled_algorithms]}")
-        
-        for algo_config in enabled_algorithms:
-            try:
-                results = self.find_optimal_k(matrix, algo_config)
-                all_results[algo_config["name"]] = results
-            except Exception as e:
-                self.logger.error(f"Algorithm {algo_config['name']} failed: {str(e)}")
-                continue
-        
-        # Display comparison
-        self._display_comparison(all_results)
-        
-        self.results = all_results
-        return all_results
+        return {"model": model, "labels": labels}
     
-    def _display_comparison(self, all_results: Dict[str, Dict]):
-        """Displays comparison table."""
-        
-        if not all_results:
-            return
-        
-        self.logger.info("\n" + "=" * 80)
-        self.logger.info("COMPARISON SUMMARY (Silhouette Scores)")
-        self.logger.info("=" * 80)
-        
-        # Get all k values
-        all_k = set()
-        for results in all_results.values():
-            all_k.update(results.get("k_values", []))
-        all_k = sorted(all_k)
-        
-        # Build header
-        algo_names = list(all_results.keys())
-        header = f"{'k':<5}"
-        for name in algo_names:
-            display = all_results[name].get("display_name", name)[:12]
-            header += f" {display:<14}"
-        header += " Best"
-        
-        self.logger.info(header)
-        self.logger.info("-" * 80)
-        
-        # Build rows
-        for k in all_k:
-            row = f"{k:<5}"
-            scores = {}
-            
-            for algo_name in algo_names:
-                results = all_results[algo_name]
-                if k in results.get("k_values", []):
-                    idx = results["k_values"].index(k)
-                    sil = results["silhouette"][idx] if idx < len(results["silhouette"]) else None
-                    if sil is not None:
-                        row += f" {sil:<14.4f}"
-                        scores[algo_name] = sil
-                    else:
-                        row += f" {'N/A':<14}"
-                else:
-                    row += f" {'N/A':<14}"
-            
-            # Find best for this k
-            if scores:
-                best = max(scores, key=scores.get)
-                row += f" {all_results[best].get('display_name', best)[:10]}"
-            
-            self.logger.info(row)
-        
-        # Overall best
-        self.logger.info("=" * 80)
-        self.logger.info("\nOVERALL BEST:")
-        
-        for algo_name, results in all_results.items():
-            best_k = results.get("best_k", "N/A")
-            best_sil = results.get("best_silhouette", 0)
-            display = results.get("display_name", algo_name)
-            
-            sil_str = f"{best_sil:.4f}" if best_sil else "N/A"
-            self.logger.info(f"  {display}: k={best_k}, Silhouette={sil_str}")
+    return None
+
+
+def _select_algorithm(enabled: list) -> dict:
+    """Helper to select algorithm."""
     
-    def train_model(
-        self,
-        matrix: pd.DataFrame,
-        algorithm_name: str,
-        n_clusters: int
-    ) -> Tuple[Any, np.ndarray, Optional[np.ndarray]]:
-        """
-        Trains a final model.
-        
-        Args:
-            matrix: Feature matrix
-            algorithm_name: Algorithm to use
-            n_clusters: Number of clusters
-        
-        Returns:
-            Tuple of (model, labels, probabilities)
-        """
-        
-        # Find algorithm config
-        algo_config = None
-        for a in self.clustering_config.get("algorithms", []):
-            if a["name"] == algorithm_name:
-                algo_config = a
-                break
-        
-        if not algo_config:
-            raise ValueError(f"Algorithm not found: {algorithm_name}")
-        
-        display_name = algo_config.get("display_name", algorithm_name)
-        
-        self.logger.info("\n" + "=" * 60)
-        self.logger.info("TRAINING FINAL MODEL")
-        self.logger.info("=" * 60)
-        self.logger.info(f"Algorithm: {display_name}")
-        self.logger.info(f"Clusters: {n_clusters}")
-        
-        # Create and fit model
-        model = self.create_model(algo_config, n_clusters)
-        labels = model.fit_predict(matrix.values)
-        
-        # Get probabilities for GMM
-        probabilities = None
-        if algorithm_name == "gmm":
-            probabilities = model.predict_proba(matrix.values)
-        
-        # Calculate metrics
-        metrics = self.calculate_metrics(matrix.values, labels, model, algorithm_name)
-        
-        self.logger.info("\nMetrics:")
-        for name, value in metrics.items():
-            if value is not None:
-                self.logger.info(f"  {name}: {value:.4f}")
-        
-        # Cluster distribution
-        self.logger.info("\nCluster Distribution:")
-        unique, counts = np.unique(labels, return_counts=True)
-        for cid, count in zip(unique, counts):
-            pct = count / len(labels) * 100
-            self.logger.info(f"  Cluster {cid}: {count:,} users ({pct:.1f}%)")
-        
-        self.fitted_models[algorithm_name] = model
-        
-        return model, labels, probabilities
+    print("\nSelect algorithm:")
+    for i, algo in enumerate(enabled, 1):
+        print(f"  {i}. {algo['display_name']}")
     
-    def save_model(self, model: Any, algorithm_name: str) -> str:
-        """Saves model to disk."""
-        
-        model_dir = self.config["paths"]["models"]
-        os.makedirs(model_dir, exist_ok=True)
-        
-        model_path = os.path.join(model_dir, f"clustering_model_{algorithm_name}.pkl")
-        
-        with open(model_path, "wb") as f:
-            pickle.dump(model, f)
-        
-        self.logger.info(f"Model saved: {model_path}")
-        
-        return model_path
+    idx = int(input("Enter number: ").strip()) - 1
+    return enabled[idx]
+
+
+def _interactive_train(clusterer, matrix, all_results, enabled):
+    """Helper for training after comparison."""
     
-    def save_assignments(
-        self,
-        matrix: pd.DataFrame,
-        labels: np.ndarray,
-        algorithm_name: str,
-        probabilities: Optional[np.ndarray] = None
-    ) -> str:
-        """Saves cluster assignments."""
-        
-        output_dir = self.config["paths"]["processed_data"]
-        os.makedirs(output_dir, exist_ok=True)
-        
-        assignments = pd.DataFrame({
-            "user_id": matrix.index,
-            "cluster": labels
-        })
-        
-        if probabilities is not None:
-            assignments["confidence"] = probabilities.max(axis=1)
-        
-        output_path = os.path.join(output_dir, f"cluster_assignments_{algorithm_name}.csv")
-        assignments.to_csv(output_path, index=False)
-        
-        self.logger.info(f"Assignments saved: {output_path}")
-        
-        return output_path
+    print("\nSelect algorithm:")
+    for i, algo in enumerate(enabled, 1):
+        best_k = all_results.get(algo["name"], {}).get("best_k", "N/A")
+        print(f"  {i}. {algo['display_name']} (best k={best_k})")
     
-    def save_comparison_report(self, all_results: Dict[str, Dict]) -> str:
-        """Saves comparison results to CSV."""
-        
-        report_dir = self.config["paths"]["reports"]
-        os.makedirs(report_dir, exist_ok=True)
-        
-        rows = []
-        for algo_name, results in all_results.items():
-            for i, k in enumerate(results.get("k_values", [])):
-                row = {
-                    "algorithm": algo_name,
-                    "k": k,
-                    "silhouette": results["silhouette"][i] if i < len(results["silhouette"]) else None,
-                    "calinski_harabasz": results["calinski_harabasz"][i] if i < len(results["calinski_harabasz"]) else None,
-                    "davies_bouldin": results["davies_bouldin"][i] if i < len(results["davies_bouldin"]) else None
-                }
-                rows.append(row)
-        
-        df = pd.DataFrame(rows)
-        output_path = os.path.join(report_dir, "algorithm_comparison.csv")
-        df.to_csv(output_path, index=False)
-        
-        self.logger.info(f"Comparison report saved: {output_path}")
-        
-        return output_path
+    idx = int(input("Enter number: ").strip()) - 1
+    algo_config = enabled[idx]
+    algo_name = algo_config["name"]
+    
+    suggested_k = all_results.get(algo_name, {}).get("best_k", 10)
+    k = input(f"Enter k (suggested={suggested_k}): ").strip()
+    k = int(k) if k else suggested_k
+    
+    model, labels, probs = clusterer.train_model(matrix, algo_name, k)
+    clusterer.save_model(model, algo_name)
+    clusterer.save_assignments(matrix, labels, algo_name, probs)
+
+
+def main():
+    """Main entry point."""
+    
+    parser = argparse.ArgumentParser(description="Configuration-driven clustering pipeline")
+    parser.add_argument("--step", choices=["load", "features", "clustering", "all"], default="all")
+    parser.add_argument("--validate", action="store_true", help="Only validate data")
+    parser.add_argument("--config", default="configs/config.yaml")
+    
+    args = parser.parse_args()
+    
+    # Load config
+    config = load_config(args.config)
+    
+    # Setup logger
+    logger = setup_logger(
+        log_dir=config["paths"]["logs"],
+        log_filename=config["logging"]["log_filename"],
+        level=config["logging"]["level"]
+    )
+    
+    logger.info("=" * 70)
+    logger.info("CONFIGURATION-DRIVEN CLUSTERING PIPELINE")
+    logger.info("=" * 70)
+    
+    if args.validate:
+        # Only validate
+        loader = ConfigDataLoader(config, logger)
+        df = loader.load_primary()
+        validator = PrimaryDataValidator(config, logger)
+        validator.validate(df)
+        return
+    
+    # Run pipeline
+    if args.step == "load":
+        run_data_pipeline(config, logger)
+    
+    elif args.step == "features":
+        run_feature_pipeline(config, logger)
+    
+    elif args.step == "clustering":
+        run_clustering_pipeline(config, logger)
+    
+    else:  # all
+        matrix = run_data_pipeline(config, logger)
+        matrix = run_feature_pipeline(config, logger, matrix)
+        run_clustering_pipeline(config, logger, matrix)
+    
+    logger.info("\n" + "=" * 70)
+    logger.info("PIPELINE COMPLETE")
+    logger.info("=" * 70)
+
+
+if __name__ == "__main__":
+    main()
