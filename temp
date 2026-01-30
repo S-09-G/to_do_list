@@ -1,786 +1,173 @@
-Clustering algorithms for user segmentation.
-Supports MiniBatch K-Means, Gaussian Mixture Model (GMM), and BIRCH.
-Provides comparison mode and individual algorithm mode.
-"""
+# ================================================================
+# SAMSUNG USER CLUSTERING - CONFIGURATION
+# ================================================================
+# 
+# This system supports:
+# 1. PRIMARY FILE: Pre-cleaned user-genre matrix (one row per user)
+# 2. SECONDARY FILES: Additional data joined via DUID/GUID
+# ================================================================
 
-import pandas as pd
-import numpy as np
-import os
-import pickle
-from sklearn.cluster import MiniBatchKMeans, Birch
-from sklearn.mixture import GaussianMixture
-from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
+# ----------------------------------------------------------------
+# PATHS
+# ----------------------------------------------------------------
+paths:
+  processed_data: "data/processed/"
+  models: "models/"
+  reports: "reports/"
+  logs: "logs/"
 
+# ----------------------------------------------------------------
+# DATA SOURCES
+# ----------------------------------------------------------------
+data_sources:
+  # PRIMARY: Your cleaned user-genre matrix
+  # - One row per unique DUID-GUID combination
+  # - Columns are genre scores (already pivoted)
+  primary:
+    path: "data/raw/user_genre_matrix.csv"
+    user_id_column: "GUID"           # Column containing user identifier
+    device_id_column: "DUID"         # Column containing device identifier (optional)
+    # Which columns are features (genres) for clustering?
+    # Options: "auto" (detect numeric columns), or list specific columns
+    feature_columns: "auto"
+    # Columns to EXCLUDE from features (even if numeric)
+    exclude_columns: []
+    # Example: exclude_columns: ["age", "income", "some_id"]
 
-# ============================================================
-# ALGORITHM DEFINITIONS
-# ============================================================
+  # SECONDARY: Additional files to join with primary
+  # Each file must have a join key matching primary file
+  secondary:
+    # Demographics data
+    - name: "demographics"
+      path: "data/raw/user_demographics.csv"
+      enabled: false                  # Set to true when you have this file
+      join_key: "GUID"               # Column to join on
+      columns_to_use:                # Which columns to include
+        - "age_group"
+        - "region"
+      # How to use these columns for clustering?
+      # Options: "feature" (use as clustering feature), "metadata" (keep but don't cluster on)
+      usage: "feature"
+      # For categorical columns, how to encode?
+      # Options: "onehot", "label", "none"
+      encoding: "onehot"
 
-SUPPORTED_ALGORITHMS = {
-    "minibatch_kmeans": {
-        "name": "MiniBatch K-Means",
-        "description": "Fast, scalable clustering. Good for large datasets.",
-        "supports_predict": True
-    },
-    "gmm": {
-        "name": "Gaussian Mixture Model",
-        "description": "Soft clustering with probabilities. Handles overlapping clusters.",
-        "supports_predict": True
-    },
-    "birch": {
-        "name": "BIRCH",
-        "description": "Memory-efficient hierarchical clustering. Good for large datasets.",
-        "supports_predict": True
-    }
-}
+    # Device information
+    - name: "device_info"
+      path: "data/raw/device_info.csv"
+      enabled: false
+      join_key: "DUID"
+      columns_to_use:
+        - "device_type"
+        - "os_version"
+      usage: "metadata"              # Won't be used for clustering, just kept for analysis
+      encoding: "none"
 
+    # Add more secondary files as needed
+    # - name: "viewing_history"
+    #   path: "data/raw/viewing_history.csv"
+    #   enabled: false
+    #   join_key: "GUID"
+    #   columns_to_use: ["total_watch_time", "avg_session_length"]
+    #   usage: "feature"
+    #   encoding: "none"
 
-def get_model(algorithm: str, n_clusters: int, config: dict):
-    """
-    Factory function to create clustering model.
-    
-    Args:
-        algorithm: Algorithm name
-        n_clusters: Number of clusters
-        config: Configuration dictionary
-    
-    Returns:
-        Configured clustering model
-    """
-    
-    random_state = config["clustering"]["random_state"]
-    batch_size = config["clustering"].get("batch_size", 1024)
-    
-    if algorithm == "minibatch_kmeans":
-        return MiniBatchKMeans(
-            n_clusters=n_clusters,
-            random_state=random_state,
-            batch_size=batch_size,
-            n_init=10
-        )
-    
-    elif algorithm == "gmm":
-        return GaussianMixture(
-            n_components=n_clusters,
-            random_state=random_state,
-            covariance_type='full',
-            n_init=5,
-            max_iter=200
-        )
-    
-    elif algorithm == "birch":
-        return Birch(
-            n_clusters=n_clusters,
-            threshold=0.5,
-            branching_factor=50
-        )
-    
-    else:
-        raise ValueError(f"Unknown algorithm: {algorithm}. Supported: {list(SUPPORTED_ALGORITHMS.keys())}")
+# ----------------------------------------------------------------
+# FEATURE SELECTION
+# ----------------------------------------------------------------
+feature_selection:
+  # Mode: "all", "include", "exclude"
+  mode: "all"
+  
+  # If mode is "include", only use these features
+  include_features: []
+  # Example: ["Drama", "Comedy", "Action", "Thriller"]
+  
+  # If mode is "exclude", remove these features
+  exclude_features: []
+  # Example: ["Unknown_Genre", "Test_Genre"]
+  
+  # Remove features with very low variance
+  min_variance: 0.0
+  
+  # Remove highly correlated features (optional)
+  max_correlation: 1.0
 
+# ----------------------------------------------------------------
+# PREPROCESSING
+# ----------------------------------------------------------------
+preprocessing:
+  # Normalization method
+  # Options: "none", "minmax", "standard", "tfidf", "log_tfidf", "row_normalize", "balanced"
+  normalization: "balanced"
+  
+  # Dimensionality reduction
+  dimensionality_reduction:
+    enabled: true
+    method: "svd"                    # Options: "svd", "pca"
+    n_components: 50
 
-# ============================================================
-# EVALUATION METRICS
-# ============================================================
+# ----------------------------------------------------------------
+# CLUSTERING ALGORITHMS
+# ----------------------------------------------------------------
+clustering:
+  random_state: 42
+  
+  k_range:
+    min: 3
+    max: 20
+  
+  algorithms:
+    - name: "minibatch_kmeans"
+      enabled: true
+      display_name: "MiniBatch K-Means"
+      parameters:
+        batch_size: 1024
+        n_init: 10
+        max_iter: 300
 
-def calculate_metrics(matrix_values: np.ndarray, cluster_labels: np.ndarray, model, algorithm: str) -> dict:
-    """
-    Calculates all evaluation metrics for a clustering result.
-    
-    Args:
-        matrix_values: Feature matrix as numpy array
-        cluster_labels: Cluster assignments
-        model: Fitted clustering model
-        algorithm: Algorithm name
-    
-    Returns:
-        Dictionary with all metrics
-    """
-    
-    metrics = {
-        "silhouette": silhouette_score(matrix_values, cluster_labels),
-        "calinski_harabasz": calinski_harabasz_score(matrix_values, cluster_labels),
-        "davies_bouldin": davies_bouldin_score(matrix_values, cluster_labels)
-    }
-    
-    # Algorithm-specific metrics
-    if algorithm == "minibatch_kmeans":
-        metrics["inertia"] = model.inertia_
-    
-    elif algorithm == "gmm":
-        metrics["bic"] = model.bic(matrix_values)
-        metrics["aic"] = model.aic(matrix_values)
-        metrics["log_likelihood"] = model.score(matrix_values) * len(matrix_values)
-    
-    elif algorithm == "birch":
-        # BIRCH doesn't have specific metrics, but we can calculate inertia manually
-        if hasattr(model, 'subcluster_centers_'):
-            metrics["n_subclusters"] = len(model.subcluster_centers_)
-    
-    return metrics
+    - name: "gmm"
+      enabled: true
+      display_name: "Gaussian Mixture Model"
+      parameters:
+        covariance_type: "full"
+        n_init: 5
+        max_iter: 200
 
+    - name: "birch"
+      enabled: true
+      display_name: "BIRCH"
+      parameters:
+        threshold: 0.1
+        branching_factor: 50
 
-# ============================================================
-# SINGLE ALGORITHM MODE
-# ============================================================
+# ----------------------------------------------------------------
+# EVALUATION
+# ----------------------------------------------------------------
+evaluation:
+  metrics:
+    - name: "silhouette"
+      enabled: true
+      higher_is_better: true
+    - name: "calinski_harabasz"
+      enabled: true
+      higher_is_better: true
+    - name: "davies_bouldin"
+      enabled: true
+      higher_is_better: false
 
-def find_optimal_k_single(
-    matrix: pd.DataFrame,
-    config: dict,
-    logger,
-    algorithm: str,
-    k_range: tuple = (3, 20)
-) -> dict:
-    """
-    Finds optimal k for a single algorithm.
-    
-    Args:
-        matrix: User-genre feature matrix
-        config: Configuration dictionary
-        logger: Logger instance
-        algorithm: Algorithm to use
-        k_range: Tuple of (min_k, max_k) to test
-    
-    Returns:
-        Dictionary with results for each k
-    """
-    
-    algo_info = SUPPORTED_ALGORITHMS.get(algorithm)
-    if not algo_info:
-        raise ValueError(f"Unknown algorithm: {algorithm}")
-    
-    logger.info("=" * 60)
-    logger.info(f"FINDING OPTIMAL K - {algo_info['name']}")
-    logger.info(f"Description: {algo_info['description']}")
-    logger.info("=" * 60)
-    
-    k_min, k_max = k_range
-    logger.info(f"Testing k from {k_min} to {k_max}...")
-    
-    results = {
-        "algorithm": algorithm,
-        "k_values": [],
-        "silhouette": [],
-        "calinski_harabasz": [],
-        "davies_bouldin": [],
-        "inertia": [],
-        "bic": [],
-        "aic": [],
-        "log_likelihood": []
-    }
-    
-    matrix_values = matrix.values
-    
-    for k in range(k_min, k_max + 1):
-        logger.info(f"  Testing k={k}...")
-        
-        try:
-            # Create and fit model
-            model = get_model(algorithm, k, config)
-            cluster_labels = model.fit_predict(matrix_values)
-            
-            # Calculate metrics
-            metrics = calculate_metrics(matrix_values, cluster_labels, model, algorithm)
-            
-            # Store results
-            results["k_values"].append(k)
-            results["silhouette"].append(metrics["silhouette"])
-            results["calinski_harabasz"].append(metrics["calinski_harabasz"])
-            results["davies_bouldin"].append(metrics["davies_bouldin"])
-            results["inertia"].append(metrics.get("inertia"))
-            results["bic"].append(metrics.get("bic"))
-            results["aic"].append(metrics.get("aic"))
-            results["log_likelihood"].append(metrics.get("log_likelihood"))
-            
-            # Log key metrics
-            log_msg = f"    Silhouette: {metrics['silhouette']:.4f} | Davies-Bouldin: {metrics['davies_bouldin']:.4f}"
-            if algorithm == "gmm":
-                log_msg += f" | BIC: {metrics['bic']:.2f}"
-            elif algorithm == "minibatch_kmeans":
-                log_msg += f" | Inertia: {metrics['inertia']:.2f}"
-            logger.info(log_msg)
-            
-        except Exception as e:
-            logger.warning(f"    Failed for k={k}: {str(e)}")
-            continue
-    
-    # Find best k
-    if results["silhouette"]:
-        best_idx = np.argmax(results["silhouette"])
-        best_k = results["k_values"][best_idx]
-        best_silhouette = results["silhouette"][best_idx]
-        
-        logger.info("-" * 60)
-        logger.info(f"BEST K: {best_k} (Silhouette: {best_silhouette:.4f})")
-        
-        results["best_k"] = best_k
-        results["best_silhouette"] = best_silhouette
-    
-    return results
+# ----------------------------------------------------------------
+# OUTPUT
+# ----------------------------------------------------------------
+output:
+  save_intermediate: true
+  save_models: true
+  generate_reports: true
 
-
-def display_single_results(results: dict, logger):
-    """
-    Displays results table for single algorithm.
-    
-    Args:
-        results: Results dictionary from find_optimal_k_single
-        logger: Logger instance
-    """
-    
-    algorithm = results["algorithm"]
-    
-    logger.info("\n" + "=" * 70)
-    logger.info(f"RESULTS SUMMARY - {SUPPORTED_ALGORITHMS[algorithm]['name']}")
-    logger.info("=" * 70)
-    
-    # Header based on algorithm
-    if algorithm == "gmm":
-        logger.info(f"{'k':<5} {'Silhouette':<12} {'Calinski-H':<12} {'Davies-B':<12} {'BIC':<15}")
-    elif algorithm == "minibatch_kmeans":
-        logger.info(f"{'k':<5} {'Silhouette':<12} {'Calinski-H':<12} {'Davies-B':<12} {'Inertia':<15}")
-    else:
-        logger.info(f"{'k':<5} {'Silhouette':<12} {'Calinski-H':<12} {'Davies-B':<12}")
-    
-    logger.info("-" * 70)
-    
-    best_k = results.get("best_k")
-    
-    for i, k in enumerate(results["k_values"]):
-        sil = results["silhouette"][i]
-        cal = results["calinski_harabasz"][i]
-        dav = results["davies_bouldin"][i]
-        
-        marker = " ← BEST" if k == best_k else ""
-        
-        if algorithm == "gmm":
-            bic = results["bic"][i]
-            logger.info(f"{k:<5} {sil:<12.4f} {cal:<12.2f} {dav:<12.4f} {bic:<15.2f}{marker}")
-        elif algorithm == "minibatch_kmeans":
-            inertia = results["inertia"][i]
-            logger.info(f"{k:<5} {sil:<12.4f} {cal:<12.2f} {dav:<12.4f} {inertia:<15.2f}{marker}")
-        else:
-            logger.info(f"{k:<5} {sil:<12.4f} {cal:<12.2f} {dav:<12.4f}{marker}")
-    
-    logger.info("=" * 70)
-
-
-# ============================================================
-# COMPARISON MODE
-# ============================================================
-
-def compare_all_algorithms(
-    matrix: pd.DataFrame,
-    config: dict,
-    logger,
-    k_range: tuple = (3, 20)
-) -> dict:
-    """
-    Compares all three algorithms across different k values.
-    
-    Args:
-        matrix: User-genre feature matrix
-        config: Configuration dictionary
-        logger: Logger instance
-        k_range: Tuple of (min_k, max_k) to test
-    
-    Returns:
-        Dictionary with results for all algorithms
-    """
-    
-    logger.info("\n" + "=" * 70)
-    logger.info("ALGORITHM COMPARISON: MiniBatch K-Means vs GMM vs BIRCH")
-    logger.info("=" * 70)
-    
-    all_results = {}
-    
-    for algorithm in SUPPORTED_ALGORITHMS.keys():
-        logger.info(f"\n>>> Running {SUPPORTED_ALGORITHMS[algorithm]['name']}...")
-        results = find_optimal_k_single(matrix, config, logger, algorithm, k_range)
-        all_results[algorithm] = results
-    
-    return all_results
-
-
-def display_comparison_table(all_results: dict, logger):
-    """
-    Displays a side-by-side comparison table of all algorithms.
-    
-    Args:
-        all_results: Dictionary with results for all algorithms
-        logger: Logger instance
-    """
-    
-    logger.info("\n" + "=" * 90)
-    logger.info("SIDE-BY-SIDE COMPARISON (Silhouette Scores)")
-    logger.info("=" * 90)
-    
-    # Get all k values (assuming same range for all)
-    k_values = all_results["minibatch_kmeans"]["k_values"]
-    
-    # Header
-    logger.info(f"{'k':<5} {'K-Means':<15} {'GMM':<15} {'BIRCH':<15} {'Best Algorithm'}")
-    logger.info("-" * 90)
-    
-    for i, k in enumerate(k_values):
-        kmeans_sil = all_results["minibatch_kmeans"]["silhouette"][i] if i < len(all_results["minibatch_kmeans"]["silhouette"]) else None
-        gmm_sil = all_results["gmm"]["silhouette"][i] if i < len(all_results["gmm"]["silhouette"]) else None
-        birch_sil = all_results["birch"]["silhouette"][i] if i < len(all_results["birch"]["silhouette"]) else None
-        
-        # Find best for this k
-        scores = {
-            "K-Means": kmeans_sil,
-            "GMM": gmm_sil,
-            "BIRCH": birch_sil
-        }
-        scores = {k: v for k, v in scores.items() if v is not None}
-        best_algo = max(scores, key=scores.get) if scores else "N/A"
-        
-        kmeans_str = f"{kmeans_sil:.4f}" if kmeans_sil else "N/A"
-        gmm_str = f"{gmm_sil:.4f}" if gmm_sil else "N/A"
-        birch_str = f"{birch_sil:.4f}" if birch_sil else "N/A"
-        
-        logger.info(f"{k:<5} {kmeans_str:<15} {gmm_str:<15} {birch_str:<15} {best_algo}")
-    
-    logger.info("=" * 90)
-    
-    # Overall best
-    logger.info("\nOVERALL BEST CONFIGURATION:")
-    logger.info("-" * 40)
-    
-    for algo_key, algo_results in all_results.items():
-        algo_name = SUPPORTED_ALGORITHMS[algo_key]["name"]
-        best_k = algo_results.get("best_k", "N/A")
-        best_sil = algo_results.get("best_silhouette", 0)
-        logger.info(f"  {algo_name}: k={best_k}, Silhouette={best_sil:.4f}")
-    
-    # Find overall winner
-    best_overall = max(
-        all_results.items(),
-        key=lambda x: x[1].get("best_silhouette", 0)
-    )
-    logger.info("-" * 40)
-    logger.info(f"  WINNER: {SUPPORTED_ALGORITHMS[best_overall[0]]['name']} with k={best_overall[1]['best_k']}")
-
-
-def save_comparison_results(all_results: dict, config: dict, logger) -> str:
-    """
-    Saves comparison results to CSV.
-    
-    Args:
-        all_results: Dictionary with results for all algorithms
-        config: Configuration dictionary
-        logger: Logger instance
-    
-    Returns:
-        Path where results were saved
-    """
-    
-    report_dir = config["paths"]["reports"]
-    os.makedirs(report_dir, exist_ok=True)
-    
-    # Create comparison dataframe
-    k_values = all_results["minibatch_kmeans"]["k_values"]
-    
-    comparison_data = {"k": k_values}
-    
-    for algo_key in SUPPORTED_ALGORITHMS.keys():
-        results = all_results[algo_key]
-        comparison_data[f"{algo_key}_silhouette"] = results["silhouette"]
-        comparison_data[f"{algo_key}_davies_bouldin"] = results["davies_bouldin"]
-        comparison_data[f"{algo_key}_calinski_harabasz"] = results["calinski_harabasz"]
-    
-    comparison_df = pd.DataFrame(comparison_data)
-    
-    output_path = os.path.join(report_dir, "algorithm_comparison.csv")
-    comparison_df.to_csv(output_path, index=False)
-    
-    logger.info(f"Comparison results saved to: {output_path}")
-    
-    return output_path
-
-
-# ============================================================
-# TRAINING FINAL MODEL
-# ============================================================
-
-def train_model(
-    matrix: pd.DataFrame,
-    config: dict,
-    logger,
-    algorithm: str,
-    n_clusters: int
-) -> tuple:
-    """
-    Trains the final clustering model with specified parameters.
-    
-    Args:
-        matrix: User-genre feature matrix
-        config: Configuration dictionary
-        logger: Logger instance
-        algorithm: Algorithm to use
-        n_clusters: Number of clusters
-    
-    Returns:
-        Tuple of (model, cluster_labels, probabilities/None)
-    """
-    
-    algo_info = SUPPORTED_ALGORITHMS.get(algorithm)
-    if not algo_info:
-        raise ValueError(f"Unknown algorithm: {algorithm}")
-    
-    logger.info("=" * 60)
-    logger.info("TRAINING FINAL MODEL")
-    logger.info("=" * 60)
-    logger.info(f"Algorithm: {algo_info['name']}")
-    logger.info(f"Number of clusters: {n_clusters}")
-    
-    matrix_values = matrix.values
-    
-    # Create and fit model
-    model = get_model(algorithm, n_clusters, config)
-    cluster_labels = model.fit_predict(matrix_values)
-    
-    # Get probabilities for GMM
-    probabilities = None
-    if algorithm == "gmm":
-        probabilities = model.predict_proba(matrix_values)
-    
-    # Calculate metrics
-    metrics = calculate_metrics(matrix_values, cluster_labels, model, algorithm)
-    
-    logger.info("\nTraining complete!")
-    logger.info(f"  Silhouette Score: {metrics['silhouette']:.4f}")
-    logger.info(f"  Calinski-Harabasz: {metrics['calinski_harabasz']:.2f}")
-    logger.info(f"  Davies-Bouldin: {metrics['davies_bouldin']:.4f}")
-    
-    # Cluster distribution
-    logger.info("-" * 60)
-    logger.info("CLUSTER DISTRIBUTION:")
-    unique, counts = np.unique(cluster_labels, return_counts=True)
-    for cluster_id, count in zip(unique, counts):
-        pct = (count / len(cluster_labels)) * 100
-        logger.info(f"  Cluster {cluster_id}: {count:,} users ({pct:.1f}%)")
-    
-    # GMM-specific info
-    if probabilities is not None:
-        avg_confidence = probabilities.max(axis=1).mean()
-        logger.info("-" * 60)
-        logger.info(f"GMM Average Confidence: {avg_confidence:.4f}")
-    
-    return model, cluster_labels, probabilities
-
-
-def save_model(model, config: dict, logger, algorithm: str) -> str:
-    """
-    Saves the trained model to disk.
-    
-    Args:
-        model: Trained model
-        config: Configuration dictionary
-        logger: Logger instance
-        algorithm: Algorithm name
-    
-    Returns:
-        Path where model was saved
-    """
-    
-    model_dir = config["paths"]["models"]
-    os.makedirs(model_dir, exist_ok=True)
-    
-    model_path = os.path.join(model_dir, f"clustering_model_{algorithm}.pkl")
-    
-    with open(model_path, "wb") as f:
-        pickle.dump(model, f)
-    
-    logger.info(f"Model saved to: {model_path}")
-    
-    return model_path
-
-
-def save_cluster_assignments(
-    matrix: pd.DataFrame,
-    cluster_labels: np.ndarray,
-    config: dict,
-    logger,
-    algorithm: str,
-    probabilities: np.ndarray = None
-) -> str:
-    """
-    Saves cluster assignments to CSV.
-    
-    Args:
-        matrix: User-genre matrix
-        cluster_labels: Cluster assignments
-        config: Configuration dictionary
-        logger: Logger instance
-        algorithm: Algorithm name
-        probabilities: Cluster probabilities (GMM only)
-    
-    Returns:
-        Path where assignments were saved
-    """
-    
-    output_dir = config["paths"]["processed_data"]
-    os.makedirs(output_dir, exist_ok=True)
-    
-    assignments = pd.DataFrame({
-        "user_id": matrix.index,
-        "cluster": cluster_labels
-    })
-    
-    if probabilities is not None:
-        assignments["confidence"] = probabilities.max(axis=1)
-        
-        # Add second best cluster info
-        top2 = np.argsort(probabilities, axis=1)[:, -2:]
-        assignments["second_best_cluster"] = top2[:, 0]
-        assignments["second_best_prob"] = probabilities[np.arange(len(probabilities)), top2[:, 0]]
-    
-    output_path = os.path.join(output_dir, f"cluster_assignments_{algorithm}.csv")
-    assignments.to_csv(output_path, index=False)
-    
-    logger.info(f"Cluster assignments saved to: {output_path}")
-    
-    return output_path
-
-
-# ============================================================
-# USER INTERFACE HELPER
-# ============================================================
-
-def print_menu():
-    """Prints the main menu for user interaction."""
-    
-    print("\n" + "=" * 60)
-    print("CLUSTERING PIPELINE - MAIN MENU")
-    print("=" * 60)
-    print("\nAvailable Options:")
-    print("  1. Compare all algorithms (find best algorithm & k)")
-    print("  2. Run single algorithm (find best k for one algorithm)")
-    print("  3. Train final model (with specific algorithm & k)")
-    print("  4. Exit")
-    print("\nAvailable Algorithms:")
-    for key, info in SUPPORTED_ALGORITHMS.items():
-        print(f"  • {key}: {info['description']}")
-    print("=" * 60)
-
-
-def get_user_choice() -> tuple:
-    """
-    Gets user's choice for clustering mode.
-    
-    Returns:
-        Tuple of (mode, algorithm, k_range, final_k)
-    """
-    
-    print_menu()
-    
-    choice = input("\nEnter option (1/2/3/4): ").strip()
-    
-    if choice == "4":
-        return ("exit", None, None, None)
-    
-    if choice == "1":
-        # Compare mode
-        k_min = input("Enter minimum k (default=3): ").strip()
-        k_max = input("Enter maximum k (default=20): ").strip()
-        
-        k_min = int(k_min) if k_min else 3
-        k_max = int(k_max) if k_max else 20
-        
-        return ("compare", None, (k_min, k_max), None)
-    
-    elif choice == "2":
-        # Single algorithm mode
-        print("\nSelect algorithm:")
-        print("  1. minibatch_kmeans")
-        print("  2. gmm")
-        print("  3. birch")
-        
-        algo_choice = input("Enter choice (1/2/3): ").strip()
-        algo_map = {"1": "minibatch_kmeans", "2": "gmm", "3": "birch"}
-        algorithm = algo_map.get(algo_choice, "minibatch_kmeans")
-        
-        k_min = input("Enter minimum k (default=3): ").strip()
-        k_max = input("Enter maximum k (default=20): ").strip()
-        
-        k_min = int(k_min) if k_min else 3
-        k_max = int(k_max) if k_max else 20
-        
-        return ("single", algorithm, (k_min, k_max), None)
-    
-    elif choice == "3":
-        # Train final model
-        print("\nSelect algorithm:")
-        print("  1. minibatch_kmeans")
-        print("  2. gmm")
-        print("  3. birch")
-        
-        algo_choice = input("Enter choice (1/2/3): ").strip()
-        algo_map = {"1": "minibatch_kmeans", "2": "gmm", "3": "birch"}
-        algorithm = algo_map.get(algo_choice, "minibatch_kmeans")
-k = input("Enter number of clusters (k): ").strip()
-        k = int(k) if k else 10
-        
-        return ("train", algorithm, None, k)
-    
-    else:
-        print("Invalid choice. Defaulting to compare mode.")
-        return ("compare", None, (3, 20), None)
-        
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-Step 4: Cluster users with flexible algorithm selection.
-Run from project root: python run_clustering.py
-"""
-
-import pandas as pd
-from src.config_loader import load_config
-from src.logger_setup import setup_logger
-from src.models.clustering import (
-    get_user_choice,
-    find_optimal_k_single,
-    display_single_results,
-    compare_all_algorithms,
-    display_comparison_table,
-    save_comparison_results,
-    train_model,
-    save_model,
-    save_cluster_assignments
-)
-
-
-def main():
-    # Load config
-    config = load_config()
-    
-    # Setup logger
-    logger = setup_logger(
-        log_dir=config["paths"]["logs"],
-        log_filename="clustering.log",
-        level=config["logging"]["level"]
-    )
-    
-    logger.info("Starting clustering pipeline...")
-    
-    # Load feature matrix
-    matrix_path = config["paths"]["processed_data"] + "user_genre_matrix.csv"
-    logger.info(f"Loading feature matrix from: {matrix_path}")
-    matrix = pd.read_csv(matrix_path, index_col=0)
-    logger.info(f"Loaded matrix: {matrix.shape[0]:,} users × {matrix.shape[1]} features")
-    
-    # Get user choice
-    mode, algorithm, k_range, final_k = get_user_choice()
-    
-    if mode == "exit":
-        logger.info("Exiting...")
-        return None
-    
-    # ========================================
-    # MODE 1: Compare all algorithms
-    # ========================================
-    if mode == "compare":
-        logger.info(f"\nRunning comparison mode with k_range={k_range}")
-        
-        # Run comparison
-        all_results = compare_all_algorithms(matrix, config, logger, k_range)
-        
-        # Display results
-        display_comparison_table(all_results, logger)
-        
-        # Save results
-        save_comparison_results(all_results, config, logger)
-        
-        # Ask if user wants to train final model
-        print("\n" + "=" * 60)
-        print("Would you like to train a final model now?")
-        train_choice = input("Enter 'y' to train, any other key to exit: ").strip().lower()
-        
-        if train_choice == 'y':
-            print("\nSelect algorithm:")
-            print("  1. minibatch_kmeans")
-            print("  2. gmm")
-            print("  3. birch")
-            
-            algo_choice = input("Enter choice (1/2/3): ").strip()
-            algo_map = {"1": "minibatch_kmeans", "2": "gmm", "3": "birch"}
-            algorithm = algo_map.get(algo_choice, "minibatch_kmeans")
-            
-            # Suggest best k for chosen algorithm
-            suggested_k = all_results[algorithm].get("best_k", 10)
-            k_input = input(f"Enter k (suggested={suggested_k}): ").strip()
-            final_k = int(k_input) if k_input else suggested_k
-            
-            # Train model
-            model, labels, probs = train_model(matrix, config, logger, algorithm, final_k)
-            save_model(model, config, logger, algorithm)
-            save_cluster_assignments(matrix, labels, config, logger, algorithm, probs)
-        
-        return all_results
-    
-    # ========================================
-    # MODE 2: Single algorithm analysis
-    # ========================================
-    elif mode == "single":
-        logger.info(f"\nRunning single algorithm mode: {algorithm}, k_range={k_range}")
-        
-        # Find optimal k
-        results = find_optimal_k_single(matrix, config, logger, algorithm, k_range)
-        
-        # Display results
-        display_single_results(results, logger)
-        
-        # Ask if user wants to train final model
-        print("\n" + "=" * 60)
-        print("Would you like to train a final model now?")
-        train_choice = input("Enter 'y' to train, any other key to exit: ").strip().lower()
-        
-        if train_choice == 'y':
-            suggested_k = results.get("best_k", 10)
-            k_input = input(f"Enter k (suggested={suggested_k}): ").strip()
-            final_k = int(k_input) if k_input else suggested_k
-            
-            # Train model
-            model, labels, probs = train_model(matrix, config, logger, algorithm, final_k)
-            save_model(model, config, logger, algorithm)
-            save_cluster_assignments(matrix, labels, config, logger, algorithm, probs)
-        
-        return results
-    
-    # ========================================
-    # MODE 3: Train final model directly
-    # ========================================
-    elif mode == "train":
-        logger.info(f"\nTraining final model: {algorithm}, k={final_k}")
-        
-        # Train model
-        model, labels, probs = train_model(matrix, config, logger, algorithm, final_k)
-        
-        # Save model and assignments
-        save_model(model, config, logger, algorithm)
-        save_cluster_assignments(matrix, labels, config, logger, algorithm, probs)
-        
-        return {"model": model, "labels": labels, "probabilities": probs}
-    
-    logger.info("\nClustering pipeline complete!")
-
-
-if __name__ == "__main__":
-    results = main()
+# ----------------------------------------------------------------
+# LOGGING
+# ----------------------------------------------------------------
+logging:
+  level: "INFO"
+  log_to_file: true
+  log_filename: "pipeline.log"
