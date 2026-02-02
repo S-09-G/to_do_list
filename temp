@@ -1,301 +1,77 @@
 """
-API routes for the clustering pipeline.
+FastAPI application for the clustering pipeline.
+
+Run with: uvicorn api.main:app --reload --port 8000
 """
 
-from fastapi import APIRouter, HTTPException
-from typing import Optional
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-from api.schemas.pipeline_schemas import (
-    ConfigResponse,
-    ConfigUpdate,
-    DataValidationResponse,
-    DataInfoResponse,
-    FeatureEngineeringRequest,
-    FeatureEngineeringResponse,
-    CompareAlgorithmsRequest,
-    CompareAlgorithmsResponse,
-    TrainModelRequest,
-    TrainModelResponse,
-    ErrorResponse
+from api.routes.pipeline_routes import router as pipeline_router
+
+
+# Create FastAPI app
+app = FastAPI(
+    title="Samsung User Clustering API",
+    description="""
+    Configuration-driven user clustering pipeline API.
+    
+    ## Features
+    - **Configuration Management**: Update normalization, algorithms, and parameters
+    - **Data Validation**: Validate input data before processing
+    - **Feature Engineering**: Run normalization and dimensionality reduction
+    - **Clustering**: Compare algorithms and train models
+    - **Results**: Retrieve comparison reports and cluster assignments
+    
+    ## Workflow
+    1. Validate data: `GET /api/data/validate`
+    2. Run feature engineering: `POST /api/pipeline/features`
+    3. Compare algorithms: `POST /api/pipeline/clustering/compare`
+    4. Train final model: `POST /api/pipeline/clustering/train`
+    """,
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
 )
-from api.services.pipeline_service import get_pipeline_service
 
 
-# Create router
-router = APIRouter()
+# Add CORS middleware (allows frontend to call API)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify actual origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# Include routes
+app.include_router(pipeline_router, prefix="/api")
 
 
 # ============================================================
-# CONFIG ENDPOINTS
+# ROOT ENDPOINTS
 # ============================================================
 
-@router.get("/config", response_model=ConfigResponse, tags=["Configuration"])
-def get_config():
+@app.get("/", tags=["Health"])
+def root():
     """
-    Get current pipeline configuration.
+    Root endpoint - API information.
     """
-    service = get_pipeline_service()
-    config = service.get_config()
-    return config
-
-
-@router.put("/config", response_model=ConfigResponse, tags=["Configuration"])
-def update_config(updates: ConfigUpdate):
-    """
-    Update pipeline configuration.
-    
-    You can update:
-    - preprocessing.normalization
-    - preprocessing.dimensionality_reduction
-    - clustering.k_range
-    - clustering.algorithms
-    """
-    service = get_pipeline_service()
-    
-    # Convert Pydantic model to dict, excluding None values
-    updates_dict = updates.dict(exclude_none=True)
-    
-    if not updates_dict:
-        raise HTTPException(status_code=400, detail="No updates provided")
-    
-    config = service.update_config(updates_dict)
-    return config
-
-
-@router.get("/config/algorithms", tags=["Configuration"])
-def get_algorithms():
-    """
-    Get list of available clustering algorithms and their status.
-    """
-    service = get_pipeline_service()
-    config = service.get_config()
-    
-    algorithms = config.get("clustering", {}).get("algorithms", [])
-    
     return {
-        "algorithms": algorithms,
-        "enabled_count": sum(1 for a in algorithms if a.get("enabled", True))
+        "name": "Samsung User Clustering API",
+        "version": "1.0.0",
+        "docs": "/docs",
+        "health": "/health"
     }
 
 
-@router.put("/config/algorithms/{algorithm_name}", tags=["Configuration"])
-def update_algorithm(algorithm_name: str, enabled: Optional[bool] = None, parameters: Optional[dict] = None):
+@app.get("/health", tags=["Health"])
+def health_check():
     """
-    Update a specific algorithm's configuration.
-    
-    - **algorithm_name**: minibatch_kmeans, gmm, or birch
-    - **enabled**: Enable or disable the algorithm
-    - **parameters**: Update algorithm parameters
+    Health check endpoint.
     """
-    service = get_pipeline_service()
-    config = service.get_config()
-    
-    # Find the algorithm
-    algorithms = config.get("clustering", {}).get("algorithms", [])
-    found = False
-    
-    for algo in algorithms:
-        if algo["name"] == algorithm_name:
-            found = True
-            if enabled is not None:
-                algo["enabled"] = enabled
-            if parameters:
-                algo["parameters"].update(parameters)
-            break
-    
-    if not found:
-        raise HTTPException(status_code=404, detail=f"Algorithm '{algorithm_name}' not found")
-    
-    # Save config
-    service.update_config({"clustering": {"algorithms": algorithms}})
-    
-    return {"message": f"Algorithm '{algorithm_name}' updated", "algorithm": algo}
-
-
-# ============================================================
-# DATA ENDPOINTS
-# ============================================================
-
-@router.get("/data/validate", response_model=DataValidationResponse, tags=["Data"])
-def validate_data():
-    """
-    Validate the primary data file.
-    
-    Checks:
-    - File exists
-    - User ID column exists
-    - User IDs are unique
-    - Has numeric feature columns
-    """
-    service = get_pipeline_service()
-    result = service.validate_data()
-    return result
-
-
-@router.get("/data/info", response_model=DataInfoResponse, tags=["Data"])
-def get_data_info():
-    """
-    Get basic information about the data file.
-    """
-    service = get_pipeline_service()
-    result = service.get_data_info()
-    return result
-
-
-# ============================================================
-# PIPELINE ENDPOINTS
-# ============================================================
-
-@router.post("/pipeline/features", response_model=FeatureEngineeringResponse, tags=["Pipeline"])
-def run_feature_engineering(request: Optional[FeatureEngineeringRequest] = None):
-    """
-    Run feature engineering pipeline.
-    
-    Optional overrides:
-    - **normalization**: none, minmax, standard, tfidf, log_tfidf, row_normalize, balanced
-    - **use_svd**: Enable/disable dimensionality reduction
-    - **n_components**: Number of SVD components
-    """
-    service = get_pipeline_service()
-    
-    # Extract parameters
-    normalization = None
-    use_svd = None
-    n_components = None
-    
-    if request:
-        normalization = request.normalization.value if request.normalization else None
-        use_svd = request.use_svd
-        n_components = request.n_components
-    
-    result = service.run_feature_engineering(
-        normalization=normalization,
-        use_svd=use_svd,
-        n_components=n_components
-    )
-    
-    if not result["success"]:
-        raise HTTPException(status_code=500, detail=result["message"])
-    
-    return result
-
-
-@router.post("/pipeline/clustering/compare", response_model=CompareAlgorithmsResponse, tags=["Pipeline"])
-def compare_algorithms(request: Optional[CompareAlgorithmsRequest] = None):
-    """
-    Compare all enabled clustering algorithms.
-    
-    Optional parameters:
-    - **algorithms**: List of specific algorithms to compare
-    - **k_min**: Minimum number of clusters to test
-    - **k_max**: Maximum number of clusters to test
-    """
-    service = get_pipeline_service()
-    
-    # Extract parameters
-    algorithms = None
-    k_min = None
-    k_max = None
-    
-    if request:
-        algorithms = [a.value for a in request.algorithms] if request.algorithms else None
-        k_min = request.k_min
-        k_max = request.k_max
-    
-    result = service.compare_algorithms(
-        algorithms=algorithms,
-        k_min=k_min,
-        k_max=k_max
-    )
-    
-    if not result["success"]:
-        raise HTTPException(status_code=500, detail=result["message"])
-    
-    return result
-
-
-@router.post("/pipeline/clustering/train", response_model=TrainModelResponse, tags=["Pipeline"])
-def train_model(request: TrainModelRequest):
-    """
-    Train a clustering model with specified algorithm and number of clusters.
-    
-    Required parameters:
-    - **algorithm**: minibatch_kmeans, gmm, or birch
-    - **n_clusters**: Number of clusters (2-100)
-    """
-    service = get_pipeline_service()
-    
-    result = service.train_model(
-        algorithm=request.algorithm.value,
-        n_clusters=request.n_clusters
-    )
-    
-    if not result["success"]:
-        raise HTTPException(status_code=500, detail=result["message"])
-    
-    return result
-
-
-# ============================================================
-# RESULTS ENDPOINTS
-# ============================================================
-
-@router.get("/results/comparison", tags=["Results"])
-def get_comparison_results():
-    """
-    Get the latest algorithm comparison results.
-    """
-    import os
-    import pandas as pd
-    
-    service = get_pipeline_service()
-    config = service.get_config()
-    
-    report_path = os.path.join(config["paths"]["reports"], "algorithm_comparison.csv")
-    
-    if not os.path.exists(report_path):
-        raise HTTPException(status_code=404, detail="No comparison results found. Run comparison first.")
-    
-    df = pd.read_csv(report_path)
-    
     return {
-        "file_path": report_path,
-        "data": df.to_dict(orient="records")
-    }
-
-
-@router.get("/results/clusters/{algorithm}", tags=["Results"])
-def get_cluster_assignments(algorithm: str):
-    """
-    Get cluster assignments for a specific algorithm.
-    """
-    import os
-    import pandas as pd
-    
-    service = get_pipeline_service()
-    config = service.get_config()
-    
-    assignments_path = os.path.join(
-        config["paths"]["processed_data"],
-        f"cluster_assignments_{algorithm}.csv"
-    )
-    
-    if not os.path.exists(assignments_path):
-        raise HTTPException(
-            status_code=404,
-            detail=f"No cluster assignments found for '{algorithm}'. Train the model first."
-        )
-    
-    df = pd.read_csv(assignments_path)
-    
-    # Summary statistics
-    distribution = df["cluster"].value_counts().sort_index().to_dict()
-    
-    return {
-        "algorithm": algorithm,
-        "total_users": len(df),
-        "n_clusters": df["cluster"].nunique(),
-        "distribution": distribution,
-        "file_path": assignments_path,
-        "sample": df.head(10).to_dict(orient="records")
+        "status": "healthy",
+        "version": "1.0.0"
     }
