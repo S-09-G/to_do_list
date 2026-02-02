@@ -1,201 +1,454 @@
 """
-Pydantic schemas for API request/response validation.
+Service layer that connects API to existing pipeline code.
 """
 
-from pydantic import BaseModel, Field
-from typing import List, Dict, Optional, Any
-from enum import Enum
+import os
+import sys
+import pandas as pd
+import numpy as np
+from typing import Dict, Any, Optional, List, Tuple
+
+# Add project root to path so we can import src modules
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from src.config_loader import load_config
+from src.logger_setup import setup_logger
+from src.data_processing.config_data_loader import ConfigDataLoader, PrimaryDataValidator
+from src.features.config_feature_engineer import ConfigFeatureEngineer
+from src.models.config_clustering import ConfigClustering
 
 
-# ============================================================
-# ENUMS
-# ============================================================
-
-class NormalizationMethod(str, Enum):
-    none = "none"
-    minmax = "minmax"
-    standard = "standard"
-    tfidf = "tfidf"
-    log_tfidf = "log_tfidf"
-    row_normalize = "row_normalize"
-    balanced = "balanced"
-
-
-class DimReductionMethod(str, Enum):
-    svd = "svd"
-    pca = "pca"
-
-
-class AlgorithmName(str, Enum):
-    minibatch_kmeans = "minibatch_kmeans"
-    gmm = "gmm"
-    birch = "birch"
-
-
-# ============================================================
-# CONFIG SCHEMAS
-# ============================================================
-
-class AlgorithmConfig(BaseModel):
-    """Configuration for a single algorithm."""
-    name: str
-    enabled: bool = True
-    display_name: Optional[str] = None
-    parameters: Dict[str, Any] = {}
-
-
-class PreprocessingConfig(BaseModel):
-    """Preprocessing configuration."""
-    normalization: NormalizationMethod = NormalizationMethod.balanced
-    dimensionality_reduction: Dict[str, Any] = {
-        "enabled": True,
-        "method": "svd",
-        "n_components": 50
-    }
-
-
-class ClusteringConfig(BaseModel):
-    """Clustering configuration."""
-    random_state: int = 42
-    k_range: Dict[str, int] = {"min": 3, "max": 20}
-    algorithms: List[AlgorithmConfig] = []
-
-
-class ConfigUpdate(BaseModel):
-    """Schema for updating configuration."""
-    preprocessing: Optional[PreprocessingConfig] = None
-    clustering: Optional[ClusteringConfig] = None
+class PipelineService:
+    """
+    Service class that wraps pipeline functionality for API use.
+    """
     
-    class Config:
-        extra = "allow"
+    def __init__(self, config_path: str = "configs/config.yaml"):
+        self.config_path = config_path
+        self.config = None
+        self.logger = None
+        self._initialize()
+    
+    def _initialize(self):
+        """Initialize config and logger."""
+        self.config = load_config(self.config_path)
+        self.logger = setup_logger(
+            log_dir=self.config["paths"]["logs"],
+            log_filename="api.log",
+            level=self.config["logging"]["level"]
+        )
+    
+    def reload_config(self):
+        """Reload configuration from file."""
+        self.config = load_config(self.config_path)
+        return self.config
+    
+    # ============================================================
+    # CONFIG OPERATIONS
+    # ============================================================
+    
+    def get_config(self) -> Dict[str, Any]:
+        """Get current configuration."""
+        return self.config
+    
+    def update_config(self, updates: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Update configuration and save to file.
+        
+        Args:
+            updates: Dictionary with config updates
+        
+        Returns:
+            Updated configuration
+        """
+        import yaml
+        
+        # Deep merge updates into config
+        def deep_merge(base: dict, updates: dict) -> dict:
+            for key, value in updates.items():
+                if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+                    deep_merge(base[key], value)
+                else:
+                    base[key] = value
+            return base
+        
+        self.config = deep_merge(self.config, updates)
+        
+        # Save to file
+        with open(self.config_path, 'w') as f:
+            yaml.dump(self.config, f, default_flow_style=False, sort_keys=False)
+        
+        self.logger.info(f"Configuration updated and saved")
+        
+        return self.config
+    
+    # ============================================================
+    # DATA OPERATIONS
+    # ============================================================
+    
+    def validate_data(self) -> Dict[str, Any]:
+        """
+        Validate the primary data file.
+        
+        Returns:
+            Validation results
+        """
+        self.logger.info("API: Validating data...")
+        
+        loader = ConfigDataLoader(self.config, self.logger)
+        
+        try:
+            df = loader.load_primary()
+            
+            validator = PrimaryDataValidator(self.config, self.logger)
+            report = validator.validate(df)
+            
+            return {
+                "valid": report["valid"],
+                "file_path": self.config["data_sources"]["primary"]["path"],
+                "n_users": len(df),
+                "n_features": len(loader.feature_columns),
+                "user_id_column": self.config["data_sources"]["primary"]["user_id_column"],
+                "users_unique": "Duplicate user IDs" not in str(report.get("warnings", [])),
+                "issues": report.get("issues", []),
+                "warnings": report.get("warnings", []),
+                "feature_columns": loader.feature_columns[:50]  # First 50 for preview
+            }
+        
+        except FileNotFoundError as e:
+            return {
+                "valid": False,
+                "file_path": self.config["data_sources"]["primary"]["path"],
+                "n_users": 0,
+                "n_features": 0,
+                "user_id_column": "",
+                "users_unique": False,
+                "issues": [str(e)],
+                "warnings": [],
+                "feature_columns": []
+            }
+    
+    def get_data_info(self) -> Dict[str, Any]:
+        """
+        Get basic information about the data file.
+        
+        Returns:
+            Data information
+        """
+        file_path = self.config["data_sources"]["primary"]["path"]
+        
+        if not os.path.exists(file_path):
+            return {
+                "file_exists": False,
+                "file_path": file_path,
+                "n_rows": None,
+                "n_columns": None,
+                "columns": []
+            }
+        
+        df = pd.read_csv(file_path, nrows=5)  # Just read header
+        full_df = pd.read_csv(file_path)
+        
+        return {
+            "file_exists": True,
+            "file_path": file_path,
+            "n_rows": len(full_df),
+            "n_columns": len(full_df.columns),
+            "columns": list(full_df.columns)
+        }
+    
+    # ============================================================
+    # FEATURE ENGINEERING
+    # ============================================================
+    
+    def run_feature_engineering(
+        self,
+        normalization: Optional[str] = None,
+        use_svd: Optional[bool] = None,
+        n_components: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Run feature engineering pipeline.
+        
+        Args:
+            normalization: Override normalization method
+            use_svd: Override SVD setting
+            n_components: Override number of components
+        
+        Returns:
+            Feature engineering results
+        """
+        self.logger.info("API: Running feature engineering...")
+        
+        # Apply overrides if provided
+        if normalization:
+            self.config["preprocessing"]["normalization"] = normalization
+        if use_svd is not None:
+            self.config["preprocessing"]["dimensionality_reduction"]["enabled"] = use_svd
+        if n_components:
+            self.config["preprocessing"]["dimensionality_reduction"]["n_components"] = n_components
+        
+        try:
+            # Load data
+            loader = ConfigDataLoader(self.config, self.logger)
+            loader.load_primary()
+            loader.load_secondary()
+            loader.merge_all()
+            feature_matrix, feature_cols = loader.get_feature_matrix()
+            
+            input_shape = {"users": feature_matrix.shape[0], "features": feature_matrix.shape[1]}
+            
+            # Feature engineering
+            engineer = ConfigFeatureEngineer(self.config, self.logger)
+            
+            # Select features
+            matrix = engineer.select_features(feature_matrix)
+            
+            # Normalize
+            normalized_matrix = engineer.normalize(matrix)
+            
+            # Save normalized
+            engineer.save_matrix(normalized_matrix, "feature_matrix_normalized.csv")
+            
+            # Dimensionality reduction
+            final_matrix, reducer = engineer.reduce_dimensions(normalized_matrix)
+            
+            # Save final
+            output_path = engineer.save_matrix(final_matrix, "feature_matrix_final.csv")
+            
+            # Save transformers
+            engineer.save_transformers()
+            
+            output_shape = {"users": final_matrix.shape[0], "features": final_matrix.shape[1]}
+            
+            # Get explained variance if SVD was applied
+            explained_variance = None
+            if reducer is not None:
+                explained_variance = float(reducer.explained_variance_ratio_.sum() * 100)
+            
+            return {
+                "success": True,
+                "input_shape": input_shape,
+                "output_shape": output_shape,
+                "normalization_method": self.config["preprocessing"]["normalization"],
+                "svd_applied": reducer is not None,
+                "explained_variance": explained_variance,
+                "output_file": output_path,
+                "message": "Feature engineering completed successfully"
+            }
+        
+        except Exception as e:
+            self.logger.error(f"Feature engineering failed: {str(e)}")
+            return {
+                "success": False,
+                "input_shape": {"users": 0, "features": 0},
+                "output_shape": {"users": 0, "features": 0},
+                "normalization_method": "",
+                "svd_applied": False,
+                "explained_variance": None,
+                "output_file": "",
+                "message": f"Error: {str(e)}"
+            }
+    
+    # ============================================================
+    # CLUSTERING
+    # ============================================================
+    
+    def compare_algorithms(
+        self,
+        algorithms: Optional[List[str]] = None,
+        k_min: Optional[int] = None,
+        k_max: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Compare clustering algorithms.
+        
+        Args:
+            algorithms: List of algorithms to compare (None = all enabled)
+            k_min: Minimum k to test
+            k_max: Maximum k to test
+        
+        Returns:
+            Comparison results
+        """
+        self.logger.info("API: Comparing algorithms...")
+        
+        # Apply overrides
+        if k_min:
+            self.config["clustering"]["k_range"]["min"] = k_min
+        if k_max:
+            self.config["clustering"]["k_range"]["max"] = k_max
+        
+        # Enable/disable algorithms if specified
+        if algorithms:
+            for algo in self.config["clustering"]["algorithms"]:
+                algo["enabled"] = algo["name"] in algorithms
+        
+        try:
+            # Load feature matrix
+            matrix_path = os.path.join(
+                self.config["paths"]["processed_data"],
+                "feature_matrix_final.csv"
+            )
+            
+            if not os.path.exists(matrix_path):
+                return {
+                    "success": False,
+                    "results": {},
+                    "best_overall": None,
+                    "report_path": "",
+                    "message": "Feature matrix not found. Run feature engineering first."
+                }
+            
+            matrix = pd.read_csv(matrix_path, index_col=0)
+            
+            # Run comparison
+            clusterer = ConfigClustering(self.config, self.logger)
+            all_results = clusterer.compare_algorithms(matrix)
+            
+            # Save report
+            report_path = clusterer.save_comparison_report(all_results)
+            
+            # Format results for API response
+            formatted_results = {}
+            best_overall = {"algorithm": None, "k": None, "silhouette": -1}
+            
+            for algo_name, results in all_results.items():
+                formatted_results[algo_name] = {
+                    "algorithm": algo_name,
+                    "display_name": results.get("display_name", algo_name),
+                    "best_k": results.get("best_k"),
+                    "best_silhouette": results.get("best_silhouette"),
+                    "k_values": results.get("k_values", []),
+                    "silhouette_scores": results.get("silhouette", []),
+                    "calinski_harabasz_scores": results.get("calinski_harabasz", []),
+                    "davies_bouldin_scores": results.get("davies_bouldin", [])
+                }
+                
+                # Track best overall
+                best_sil = results.get("best_silhouette", 0) or 0
+                if best_sil > best_overall["silhouette"]:
+                    best_overall = {
+                        "algorithm": algo_name,
+                        "k": results.get("best_k"),
+                        "silhouette": best_sil
+                    }
+            
+            return {
+                "success": True,
+                "results": formatted_results,
+                "best_overall": best_overall if best_overall["algorithm"] else None,
+                "report_path": report_path,
+                "message": "Algorithm comparison completed"
+            }
+        
+        except Exception as e:
+            self.logger.error(f"Algorithm comparison failed: {str(e)}")
+            return {
+                "success": False,
+                "results": {},
+                "best_overall": None,
+                "report_path": "",
+                "message": f"Error: {str(e)}"
+            }
+    
+    def train_model(
+        self,
+        algorithm: str,
+        n_clusters: int
+    ) -> Dict[str, Any]:
+        """
+        Train a clustering model.
+        
+        Args:
+            algorithm: Algorithm name
+            n_clusters: Number of clusters
+        
+        Returns:
+            Training results
+        """
+        self.logger.info(f"API: Training {algorithm} with k={n_clusters}...")
+        
+        try:
+            # Load feature matrix
+            matrix_path = os.path.join(
+                self.config["paths"]["processed_data"],
+                "feature_matrix_final.csv"
+            )
+            
+            if not os.path.exists(matrix_path):
+                return {
+                    "success": False,
+                    "algorithm": algorithm,
+                    "n_clusters": n_clusters,
+                    "metrics": {},
+                    "cluster_distribution": [],
+                    "model_path": "",
+                    "assignments_path": "",
+                    "message": "Feature matrix not found. Run feature engineering first."
+                }
+            
+            matrix = pd.read_csv(matrix_path, index_col=0)
+            
+            # Train model
+            clusterer = ConfigClustering(self.config, self.logger)
+            model, labels, probabilities = clusterer.train_model(matrix, algorithm, n_clusters)
+            
+            # Save model and assignments
+            model_path = clusterer.save_model(model, algorithm)
+            assignments_path = clusterer.save_assignments(matrix, labels, algorithm, probabilities)
+            
+            # Calculate metrics
+            from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
+            
+            metrics = {
+                "silhouette": float(silhouette_score(matrix.values, labels)),
+                "calinski_harabasz": float(calinski_harabasz_score(matrix.values, labels)),
+                "davies_bouldin": float(davies_bouldin_score(matrix.values, labels))
+            }
+            
+            # Cluster distribution
+            unique, counts = np.unique(labels, return_counts=True)
+            distribution = [
+                {
+                    "cluster_id": int(cid),
+                    "count": int(count),
+                    "percentage": round(count / len(labels) * 100, 2)
+                }
+                for cid, count in zip(unique, counts)
+            ]
+            
+            return {
+                "success": True,
+                "algorithm": algorithm,
+                "n_clusters": n_clusters,
+                "metrics": metrics,
+                "cluster_distribution": distribution,
+                "model_path": model_path,
+                "assignments_path": assignments_path,
+                "message": "Model trained successfully"
+            }
+        
+        except Exception as e:
+            self.logger.error(f"Model training failed: {str(e)}")
+            return {
+                "success": False,
+                "algorithm": algorithm,
+                "n_clusters": n_clusters,
+                "metrics": {},
+                "cluster_distribution": [],
+                "model_path": "",
+                "assignments_path": "",
+                "message": f"Error: {str(e)}"
+            }
 
 
-class ConfigResponse(BaseModel):
-    """Full configuration response."""
-    paths: Dict[str, str]
-    data_sources: Dict[str, Any]
-    feature_selection: Dict[str, Any]
-    preprocessing: Dict[str, Any]
-    clustering: Dict[str, Any]
-    evaluation: Dict[str, Any]
-    output: Dict[str, Any]
-    logging: Dict[str, Any]
+# Create a singleton instance
+_service_instance = None
 
-
-# ============================================================
-# DATA SCHEMAS
-# ============================================================
-
-class DataValidationResponse(BaseModel):
-    """Response from data validation."""
-    valid: bool
-    file_path: str
-    n_users: int
-    n_features: int
-    user_id_column: str
-    users_unique: bool
-    issues: List[str] = []
-    warnings: List[str] = []
-    feature_columns: List[str] = []
-
-
-class DataInfoResponse(BaseModel):
-    """Basic data information."""
-    file_exists: bool
-    file_path: str
-    n_rows: Optional[int] = None
-    n_columns: Optional[int] = None
-    columns: List[str] = []
-
-
-# ============================================================
-# PIPELINE SCHEMAS
-# ============================================================
-
-class FeatureEngineeringRequest(BaseModel):
-    """Request for feature engineering."""
-    normalization: Optional[NormalizationMethod] = None
-    use_svd: Optional[bool] = None
-    n_components: Optional[int] = None
-
-
-class FeatureEngineeringResponse(BaseModel):
-    """Response from feature engineering."""
-    success: bool
-    input_shape: Dict[str, int]
-    output_shape: Dict[str, int]
-    normalization_method: str
-    svd_applied: bool
-    explained_variance: Optional[float] = None
-    output_file: str
-    message: str = ""
-
-
-class CompareAlgorithmsRequest(BaseModel):
-    """Request for algorithm comparison."""
-    algorithms: Optional[List[AlgorithmName]] = None
-    k_min: Optional[int] = None
-    k_max: Optional[int] = None
-
-
-class AlgorithmResult(BaseModel):
-    """Result for a single algorithm."""
-    algorithm: str
-    display_name: str
-    best_k: Optional[int] = None
-    best_silhouette: Optional[float] = None
-    k_values: List[int] = []
-    silhouette_scores: List[Optional[float]] = []
-    calinski_harabasz_scores: List[Optional[float]] = []
-    davies_bouldin_scores: List[Optional[float]] = []
-
-
-class CompareAlgorithmsResponse(BaseModel):
-    """Response from algorithm comparison."""
-    success: bool
-    results: Dict[str, AlgorithmResult]
-    best_overall: Optional[Dict[str, Any]] = None
-    report_path: str = ""
-    message: str = ""
-
-
-class TrainModelRequest(BaseModel):
-    """Request for training a model."""
-    algorithm: AlgorithmName
-    n_clusters: int = Field(..., ge=2, le=100)
-
-
-class ClusterDistribution(BaseModel):
-    """Distribution of a single cluster."""
-    cluster_id: int
-    count: int
-    percentage: float
-
-
-class TrainModelResponse(BaseModel):
-    """Response from model training."""
-    success: bool
-    algorithm: str
-    n_clusters: int
-    metrics: Dict[str, Optional[float]]
-    cluster_distribution: List[ClusterDistribution]
-    model_path: str = ""
-    assignments_path: str = ""
-    message: str = ""
-
-
-# ============================================================
-# GENERAL SCHEMAS
-# ============================================================
-
-class ErrorResponse(BaseModel):
-    """Standard error response."""
-    success: bool = False
-    error: str
-    detail: Optional[str] = None
-
-
-class HealthResponse(BaseModel):
-    """Health check response."""
-    status: str = "healthy"
-    version: str = "1.0.0"
+def get_pipeline_service() -> PipelineService:
+    """Get or create pipeline service instance."""
+    global _service_instance
+    if _service_instance is None:
+        _service_instance = PipelineService()
+    return _service_instance
