@@ -1,265 +1,201 @@
 """
-CONFIGURATION-DRIVEN CLUSTERING PIPELINE
-
-Usage:
-    python run_pipeline.py                    # Run full pipeline with menu
-    python run_pipeline.py --step load        # Only load data
-    python run_pipeline.py --step features    # Only feature engineering
-    python run_pipeline.py --step clustering  # Only clustering
-    python run_pipeline.py --validate         # Validate data only
+Pydantic schemas for API request/response validation.
 """
 
-import argparse
-import pandas as pd
-import os
-from src.config_loader import load_config
-from src.logger_setup import setup_logger
-from src.data_processing.config_data_loader import ConfigDataLoader, PrimaryDataValidator
-from src.features.config_feature_engineer import ConfigFeatureEngineer
-from src.models.config_clustering import ConfigClustering
+from pydantic import BaseModel, Field
+from typing import List, Dict, Optional, Any
+from enum import Enum
 
 
-def run_data_pipeline(config: dict, logger) -> pd.DataFrame:
-    """Phase 1: Load and validate data."""
-    
-    logger.info("\n" + "#" * 70)
-    logger.info("# PHASE 1: DATA LOADING")
-    logger.info("#" * 70)
-    
-    # Load data
-    loader = ConfigDataLoader(config, logger)
-    primary_df = loader.load_primary()
-    
-    # Validate
-    validator = PrimaryDataValidator(config, logger)
-    report = validator.validate(primary_df)
-    
-    if not report["valid"]:
-        logger.error("Data validation failed! Please fix issues.")
-        raise ValueError("Data validation failed")
-    
-    # Load secondary (if any enabled)
-    loader.load_secondary()
-    merged_df = loader.merge_all()
-    
-    # Get feature matrix
-    feature_matrix, feature_cols = loader.get_feature_matrix()
-    
-    # Save
-    if config.get("output", {}).get("save_intermediate", True):
-        output_dir = config["paths"]["processed_data"]
-        os.makedirs(output_dir, exist_ok=True)
-        
-        feature_path = os.path.join(output_dir, "feature_matrix_raw.csv")
-        feature_matrix.to_csv(feature_path)
-        logger.info(f"\nFeature matrix saved: {feature_path}")
-    
-    return feature_matrix
+# ============================================================
+# ENUMS
+# ============================================================
+
+class NormalizationMethod(str, Enum):
+    none = "none"
+    minmax = "minmax"
+    standard = "standard"
+    tfidf = "tfidf"
+    log_tfidf = "log_tfidf"
+    row_normalize = "row_normalize"
+    balanced = "balanced"
 
 
-def run_feature_pipeline(config: dict, logger, matrix: pd.DataFrame = None) -> pd.DataFrame:
-    """Phase 2: Feature engineering."""
-    
-    logger.info("\n" + "#" * 70)
-    logger.info("# PHASE 2: FEATURE ENGINEERING")
-    logger.info("#" * 70)
-    
-    # Load if not provided
-    if matrix is None:
-        matrix_path = os.path.join(config["paths"]["processed_data"], "feature_matrix_raw.csv")
-        logger.info(f"Loading from: {matrix_path}")
-        matrix = pd.read_csv(matrix_path, index_col=0)
-    
-    logger.info(f"Input: {matrix.shape[0]:,} users × {matrix.shape[1]} features")
-    
-    # Feature engineering
-    engineer = ConfigFeatureEngineer(config, logger)
-    
-    # Select features
-    matrix = engineer.select_features(matrix)
-    
-    # Normalize
-    normalized_matrix = engineer.normalize(matrix)
-    
-    # Save normalized
-    if config.get("output", {}).get("save_intermediate", True):
-        engineer.save_matrix(normalized_matrix, "feature_matrix_normalized.csv")
-    
-    # Dimensionality reduction
-    final_matrix, reducer = engineer.reduce_dimensions(normalized_matrix)
-    
-    # Save final
-    engineer.save_matrix(final_matrix, "feature_matrix_final.csv")
-    
-    # Save transformers
-    if config.get("output", {}).get("save_models", True):
-        engineer.save_transformers()
-    
-    return final_matrix
+class DimReductionMethod(str, Enum):
+    svd = "svd"
+    pca = "pca"
 
 
-def run_clustering_pipeline(config: dict, logger, matrix: pd.DataFrame = None):
-    """Phase 3: Clustering with interactive menu."""
-    
-    logger.info("\n" + "#" * 70)
-    logger.info("# PHASE 3: CLUSTERING")
-    logger.info("#" * 70)
-    
-    # Load if not provided
-    if matrix is None:
-        matrix_path = os.path.join(config["paths"]["processed_data"], "feature_matrix_final.csv")
-        logger.info(f"Loading from: {matrix_path}")
-        matrix = pd.read_csv(matrix_path, index_col=0)
-    
-    logger.info(f"Matrix: {matrix.shape[0]:,} users × {matrix.shape[1]} features")
-    
-    # Initialize clustering
-    clusterer = ConfigClustering(config, logger)
-    
-    # Interactive menu
-    print("\n" + "=" * 60)
-    print("CLUSTERING OPTIONS")
-    print("=" * 60)
-    print("\n1. Compare all enabled algorithms")
-    print("2. Run single algorithm (find best k)")
-    print("3. Train final model (specify algorithm and k)")
-    print("4. Exit")
-    
-    enabled = clusterer.get_enabled_algorithms()
-    print(f"\nEnabled algorithms: {[a['display_name'] for a in enabled]}")
-    print("=" * 60)
-    
-    choice = input("\nEnter choice (1/2/3/4): ").strip()
-    
-    if choice == "4":
-        return None
-    
-    elif choice == "1":
-        # Compare all
-        all_results = clusterer.compare_algorithms(matrix)
-        clusterer.save_comparison_report(all_results)
-        
-        # Offer to train
-        train = input("\nTrain a final model? (y/n): ").strip().lower()
-        if train == 'y':
-            _interactive_train(clusterer, matrix, all_results, enabled)
-        
-        return all_results
-    
-    elif choice == "2":
-        # Single algorithm
-        algo_config = _select_algorithm(enabled)
-        results = clusterer.find_optimal_k(matrix, algo_config)
-        
-        train = input("\nTrain final model? (y/n): ").strip().lower()
-        if train == 'y':
-            suggested_k = results.get("best_k", 10)
-            k = input(f"Enter k (suggested={suggested_k}): ").strip()
-            k = int(k) if k else suggested_k
-            
-            model, labels, probs = clusterer.train_model(matrix, algo_config["name"], k)
-            clusterer.save_model(model, algo_config["name"])
-            clusterer.save_assignments(matrix, labels, algo_config["name"], probs)
-        
-        return results
-    
-    elif choice == "3":
-        # Direct train
-        algo_config = _select_algorithm(enabled)
-        k = int(input("Enter number of clusters (k): ").strip())
-        
-        model, labels, probs = clusterer.train_model(matrix, algo_config["name"], k)
-        clusterer.save_model(model, algo_config["name"])
-        clusterer.save_assignments(matrix, labels, algo_config["name"], probs)
-        
-        return {"model": model, "labels": labels}
-    
-    return None
+class AlgorithmName(str, Enum):
+    minibatch_kmeans = "minibatch_kmeans"
+    gmm = "gmm"
+    birch = "birch"
 
 
-def _select_algorithm(enabled: list) -> dict:
-    """Helper to select algorithm."""
-    
-    print("\nSelect algorithm:")
-    for i, algo in enumerate(enabled, 1):
-        print(f"  {i}. {algo['display_name']}")
-    
-    idx = int(input("Enter number: ").strip()) - 1
-    return enabled[idx]
+# ============================================================
+# CONFIG SCHEMAS
+# ============================================================
+
+class AlgorithmConfig(BaseModel):
+    """Configuration for a single algorithm."""
+    name: str
+    enabled: bool = True
+    display_name: Optional[str] = None
+    parameters: Dict[str, Any] = {}
 
 
-def _interactive_train(clusterer, matrix, all_results, enabled):
-    """Helper for training after comparison."""
-    
-    print("\nSelect algorithm:")
-    for i, algo in enumerate(enabled, 1):
-        best_k = all_results.get(algo["name"], {}).get("best_k", "N/A")
-        print(f"  {i}. {algo['display_name']} (best k={best_k})")
-    
-    idx = int(input("Enter number: ").strip()) - 1
-    algo_config = enabled[idx]
-    algo_name = algo_config["name"]
-    
-    suggested_k = all_results.get(algo_name, {}).get("best_k", 10)
-    k = input(f"Enter k (suggested={suggested_k}): ").strip()
-    k = int(k) if k else suggested_k
-    
-    model, labels, probs = clusterer.train_model(matrix, algo_name, k)
-    clusterer.save_model(model, algo_name)
-    clusterer.save_assignments(matrix, labels, algo_name, probs)
+class PreprocessingConfig(BaseModel):
+    """Preprocessing configuration."""
+    normalization: NormalizationMethod = NormalizationMethod.balanced
+    dimensionality_reduction: Dict[str, Any] = {
+        "enabled": True,
+        "method": "svd",
+        "n_components": 50
+    }
 
 
-def main():
-    """Main entry point."""
-    
-    parser = argparse.ArgumentParser(description="Configuration-driven clustering pipeline")
-    parser.add_argument("--step", choices=["load", "features", "clustering", "all"], default="all")
-    parser.add_argument("--validate", action="store_true", help="Only validate data")
-    parser.add_argument("--config", default="configs/config.yaml")
-    
-    args = parser.parse_args()
-    
-    # Load config
-    config = load_config(args.config)
-    
-    # Setup logger
-    logger = setup_logger(
-        log_dir=config["paths"]["logs"],
-        log_filename=config["logging"]["log_filename"],
-        level=config["logging"]["level"]
-    )
-    
-    logger.info("=" * 70)
-    logger.info("CONFIGURATION-DRIVEN CLUSTERING PIPELINE")
-    logger.info("=" * 70)
-    
-    if args.validate:
-        # Only validate
-        loader = ConfigDataLoader(config, logger)
-        df = loader.load_primary()
-        validator = PrimaryDataValidator(config, logger)
-        validator.validate(df)
-        return
-    
-    # Run pipeline
-    if args.step == "load":
-        run_data_pipeline(config, logger)
-    
-    elif args.step == "features":
-        run_feature_pipeline(config, logger)
-    
-    elif args.step == "clustering":
-        run_clustering_pipeline(config, logger)
-    
-    else:  # all
-        matrix = run_data_pipeline(config, logger)
-        matrix = run_feature_pipeline(config, logger, matrix)
-        run_clustering_pipeline(config, logger, matrix)
-    
-    logger.info("\n" + "=" * 70)
-    logger.info("PIPELINE COMPLETE")
-    logger.info("=" * 70)
+class ClusteringConfig(BaseModel):
+    """Clustering configuration."""
+    random_state: int = 42
+    k_range: Dict[str, int] = {"min": 3, "max": 20}
+    algorithms: List[AlgorithmConfig] = []
 
 
-if __name__ == "__main__":
-    main()
+class ConfigUpdate(BaseModel):
+    """Schema for updating configuration."""
+    preprocessing: Optional[PreprocessingConfig] = None
+    clustering: Optional[ClusteringConfig] = None
+    
+    class Config:
+        extra = "allow"
+
+
+class ConfigResponse(BaseModel):
+    """Full configuration response."""
+    paths: Dict[str, str]
+    data_sources: Dict[str, Any]
+    feature_selection: Dict[str, Any]
+    preprocessing: Dict[str, Any]
+    clustering: Dict[str, Any]
+    evaluation: Dict[str, Any]
+    output: Dict[str, Any]
+    logging: Dict[str, Any]
+
+
+# ============================================================
+# DATA SCHEMAS
+# ============================================================
+
+class DataValidationResponse(BaseModel):
+    """Response from data validation."""
+    valid: bool
+    file_path: str
+    n_users: int
+    n_features: int
+    user_id_column: str
+    users_unique: bool
+    issues: List[str] = []
+    warnings: List[str] = []
+    feature_columns: List[str] = []
+
+
+class DataInfoResponse(BaseModel):
+    """Basic data information."""
+    file_exists: bool
+    file_path: str
+    n_rows: Optional[int] = None
+    n_columns: Optional[int] = None
+    columns: List[str] = []
+
+
+# ============================================================
+# PIPELINE SCHEMAS
+# ============================================================
+
+class FeatureEngineeringRequest(BaseModel):
+    """Request for feature engineering."""
+    normalization: Optional[NormalizationMethod] = None
+    use_svd: Optional[bool] = None
+    n_components: Optional[int] = None
+
+
+class FeatureEngineeringResponse(BaseModel):
+    """Response from feature engineering."""
+    success: bool
+    input_shape: Dict[str, int]
+    output_shape: Dict[str, int]
+    normalization_method: str
+    svd_applied: bool
+    explained_variance: Optional[float] = None
+    output_file: str
+    message: str = ""
+
+
+class CompareAlgorithmsRequest(BaseModel):
+    """Request for algorithm comparison."""
+    algorithms: Optional[List[AlgorithmName]] = None
+    k_min: Optional[int] = None
+    k_max: Optional[int] = None
+
+
+class AlgorithmResult(BaseModel):
+    """Result for a single algorithm."""
+    algorithm: str
+    display_name: str
+    best_k: Optional[int] = None
+    best_silhouette: Optional[float] = None
+    k_values: List[int] = []
+    silhouette_scores: List[Optional[float]] = []
+    calinski_harabasz_scores: List[Optional[float]] = []
+    davies_bouldin_scores: List[Optional[float]] = []
+
+
+class CompareAlgorithmsResponse(BaseModel):
+    """Response from algorithm comparison."""
+    success: bool
+    results: Dict[str, AlgorithmResult]
+    best_overall: Optional[Dict[str, Any]] = None
+    report_path: str = ""
+    message: str = ""
+
+
+class TrainModelRequest(BaseModel):
+    """Request for training a model."""
+    algorithm: AlgorithmName
+    n_clusters: int = Field(..., ge=2, le=100)
+
+
+class ClusterDistribution(BaseModel):
+    """Distribution of a single cluster."""
+    cluster_id: int
+    count: int
+    percentage: float
+
+
+class TrainModelResponse(BaseModel):
+    """Response from model training."""
+    success: bool
+    algorithm: str
+    n_clusters: int
+    metrics: Dict[str, Optional[float]]
+    cluster_distribution: List[ClusterDistribution]
+    model_path: str = ""
+    assignments_path: str = ""
+    message: str = ""
+
+
+# ============================================================
+# GENERAL SCHEMAS
+# ============================================================
+
+class ErrorResponse(BaseModel):
+    """Standard error response."""
+    success: bool = False
+    error: str
+    detail: Optional[str] = None
+
+
+class HealthResponse(BaseModel):
+    """Health check response."""
+    status: str = "healthy"
+    version: str = "1.0.0"
