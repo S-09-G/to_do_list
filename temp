@@ -1,77 +1,986 @@
-"""
-FastAPI application for the clustering pipeline.
+/**
+ * API Service - Handles all backend communication
+ */
 
-Run with: uvicorn api.main:app --reload --port 8000
-"""
+import axios from 'axios';
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+// Base URL for API
+const API_BASE_URL = 'http://127.0.0.1:8000/api';
 
-from api.routes.pipeline_routes import router as pipeline_router
+// Create axios instance
+const api = axios.create({
+  baseURL: API_BASE_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+// ============================================================
+// HEALTH & CONFIG
+// ============================================================
+
+export const checkHealth = async () => {
+  const response = await axios.get('http://127.0.0.1:8000/health');
+  return response.data;
+};
+
+export const getConfig = async () => {
+  const response = await api.get('/config');
+  return response.data;
+};
+
+export const updateConfig = async (updates) => {
+  const response = await api.put('/config', updates);
+  return response.data;
+};
+
+export const getAlgorithms = async () => {
+  const response = await api.get('/config/algorithms');
+  return response.data;
+};
+
+export const updateAlgorithm = async (algorithmName, enabled, parameters) => {
+  const params = new URLSearchParams();
+  if (enabled !== null) params.append('enabled', enabled);
+  
+  const response = await api.put(
+    `/config/algorithms/${algorithmName}?${params.toString()}`,
+    parameters || {}
+  );
+  return response.data;
+};
+
+// ============================================================
+// DATA
+// ============================================================
+
+export const validateData = async () => {
+  const response = await api.get('/data/validate');
+  return response.data;
+};
+
+export const getDataInfo = async () => {
+  const response = await api.get('/data/info');
+  return response.data;
+};
+
+// ============================================================
+// PIPELINE
+// ============================================================
+
+export const runFeatureEngineering = async (options = {}) => {
+  const response = await api.post('/pipeline/features', options);
+  return response.data;
+};
+
+export const compareAlgorithms = async (options = {}) => {
+  const response = await api.post('/pipeline/clustering/compare', options);
+  return response.data;
+};
+
+export const trainModel = async (algorithm, nClusters) => {
+  const response = await api.post('/pipeline/clustering/train', {
+    algorithm: algorithm,
+    n_clusters: nClusters,
+  });
+  return response.data;
+};
+
+// ============================================================
+// RESULTS
+// ============================================================
+
+export const getComparisonResults = async () => {
+  const response = await api.get('/results/comparison');
+  return response.data;
+};
+
+export const getClusterAssignments = async (algorithm) => {
+  const response = await api.get(`/results/clusters/${algorithm}`);
+  return response.data;
+};
+
+// Export default api instance for custom calls
+export default api;
 
 
-# Create FastAPI app
-app = FastAPI(
-    title="Samsung User Clustering API",
-    description="""
-    Configuration-driven user clustering pipeline API.
-    
-    ## Features
-    - **Configuration Management**: Update normalization, algorithms, and parameters
-    - **Data Validation**: Validate input data before processing
-    - **Feature Engineering**: Run normalization and dimensionality reduction
-    - **Clustering**: Compare algorithms and train models
-    - **Results**: Retrieve comparison reports and cluster assignments
-    
-    ## Workflow
-    1. Validate data: `GET /api/data/validate`
-    2. Run feature engineering: `POST /api/pipeline/features`
-    3. Compare algorithms: `POST /api/pipeline/clustering/compare`
-    4. Train final model: `POST /api/pipeline/clustering/train`
-    """,
-    version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc"
-)
 
 
-# Add CORS middleware (allows frontend to call API)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # In production, specify actual origins
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
-# Include routes
-app.include_router(pipeline_router, prefix="/api")
 
 
-# ============================================================
-# ROOT ENDPOINTS
-# ============================================================
 
-@app.get("/", tags=["Health"])
-def root():
-    """
-    Root endpoint - API information.
-    """
-    return {
-        "name": "Samsung User Clustering API",
-        "version": "1.0.0",
-        "docs": "/docs",
-        "health": "/health"
+
+
+
+
+/**
+ * Main App Component - Dashboard Layout
+ */
+
+import React, { useState } from 'react';
+import { 
+  Database, 
+  Settings, 
+  PlayCircle, 
+  BarChart3, 
+  GitCompare,
+  Cpu,
+  CheckCircle,
+  XCircle,
+  Loader2,
+  RefreshCw
+} from 'lucide-react';
+import './App.css';
+
+// Import pages
+import DataPage from './pages/DataPage';
+import ConfigPage from './pages/ConfigPage';
+import FeaturePage from './pages/FeaturePage';
+import ClusteringPage from './pages/ClusteringPage';
+import ResultsPage from './pages/ResultsPage';
+
+function App() {
+  const [activePage, setActivePage] = useState('data');
+  const [apiStatus, setApiStatus] = useState('unknown'); // 'unknown', 'connected', 'error'
+
+  // Check API connection
+  const checkApiConnection = async () => {
+    setApiStatus('checking');
+    try {
+      const response = await fetch('http://127.0.0.1:8000/health');
+      if (response.ok) {
+        setApiStatus('connected');
+      } else {
+        setApiStatus('error');
+      }
+    } catch (error) {
+      setApiStatus('error');
     }
+  };
 
+  // Check on mount
+  React.useEffect(() => {
+    checkApiConnection();
+  }, []);
 
-@app.get("/health", tags=["Health"])
-def health_check():
-    """
-    Health check endpoint.
-    """
-    return {
-        "status": "healthy",
-        "version": "1.0.0"
+  // Navigation items
+  const navItems = [
+    { id: 'data', label: 'Data', icon: Database },
+    { id: 'config', label: 'Configuration', icon: Settings },
+    { id: 'features', label: 'Feature Engineering', icon: Cpu },
+    { id: 'clustering', label: 'Clustering', icon: GitCompare },
+    { id: 'results', label: 'Results', icon: BarChart3 },
+  ];
+
+  // Render active page
+  const renderPage = () => {
+    switch (activePage) {
+      case 'data':
+        return <DataPage />;
+      case 'config':
+        return <ConfigPage />;
+      case 'features':
+        return <FeaturePage />;
+      case 'clustering':
+        return <ClusteringPage />;
+      case 'results':
+        return <ResultsPage />;
+      default:
+        return <DataPage />;
     }
+  };
+
+  return (
+    <div className="app">
+      {/* Sidebar */}
+      <aside className="sidebar">
+        <div className="sidebar-header">
+          <h1>🎯 User Clustering</h1>
+          <p>Samsung Analytics</p>
+        </div>
+
+        {/* API Status */}
+        <div className={`api-status status-${apiStatus}`}>
+          {apiStatus === 'checking' && (
+            <>
+              <Loader2 className="icon spinning" size={16} />
+              <span>Connecting...</span>
+            </>
+          )}
+          {apiStatus === 'connected' && (
+            <>
+              <CheckCircle className="icon" size={16} />
+              <span>API Connected</span>
+            </>
+          )}
+          {apiStatus === 'error' && (
+            <>
+              <XCircle className="icon" size={16} />
+              <span>API Offline</span>
+              <button onClick={checkApiConnection} className="retry-btn">
+                <RefreshCw size={14} />
+              </button>
+            </>
+          )}
+          {apiStatus === 'unknown' && (
+            <>
+              <Loader2 className="icon" size={16} />
+              <span>Checking...</span>
+            </>
+          )}
+        </div>
+
+        {/* Navigation */}
+        <nav className="nav">
+          {navItems.map((item) => (
+            <button
+              key={item.id}
+              className={`nav-item ${activePage === item.id ? 'active' : ''}`}
+              onClick={() => setActivePage(item.id)}
+            >
+              <item.icon size={20} />
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </nav>
+
+        {/* Workflow hint */}
+        <div className="workflow-hint">
+          <h4>Workflow</h4>
+          <ol>
+            <li className={activePage === 'data' ? 'current' : ''}>Validate Data</li>
+            <li className={activePage === 'config' ? 'current' : ''}>Configure</li>
+            <li className={activePage === 'features' ? 'current' : ''}>Features</li>
+            <li className={activePage === 'clustering' ? 'current' : ''}>Cluster</li>
+            <li className={activePage === 'results' ? 'current' : ''}>Results</li>
+          </ol>
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className="main-content">
+        {apiStatus === 'error' ? (
+          <div className="api-error-banner">
+            <XCircle size={20} />
+            <span>Backend API is not running. Start it with: <code>uvicorn api.main:app --reload --port 8000</code></span>
+          </div>
+        ) : null}
+        {renderPage()}
+      </main>
+    </div>
+  );
+}
+
+export default App;
+
+
+
+
+
+
+
+
+
+
+
+/**
+ * Dashboard Styles
+ */
+
+/* ============================================================
+   CSS VARIABLES
+   ============================================================ */
+:root {
+  --primary-color: #3b82f6;
+  --primary-hover: #2563eb;
+  --success-color: #10b981;
+  --warning-color: #f59e0b;
+  --error-color: #ef4444;
+  --bg-dark: #1e293b;
+  --bg-darker: #0f172a;
+  --bg-light: #f8fafc;
+  --bg-card: #ffffff;
+  --text-primary: #1e293b;
+  --text-secondary: #64748b;
+  --text-light: #f8fafc;
+  --border-color: #e2e8f0;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 4px 6px rgba(0, 0, 0, 0.1);
+  --radius: 8px;
+  --radius-lg: 12px;
+}
+
+/* ============================================================
+   RESET & BASE
+   ============================================================ */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: var(--bg-light);
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+/* ============================================================
+   APP LAYOUT
+   ============================================================ */
+.app {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* ============================================================
+   SIDEBAR
+   ============================================================ */
+.sidebar {
+  width: 260px;
+  background: var(--bg-dark);
+  color: var(--text-light);
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.sidebar-header {
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.sidebar-header h1 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.sidebar-header p {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+/* API Status */
+.api-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  margin-bottom: 20px;
+  font-size: 0.875rem;
+}
+
+.api-status .icon {
+  flex-shrink: 0;
+}
+
+.api-status.status-connected {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--success-color);
+}
+
+.api-status.status-error {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--error-color);
+}
+
+.api-status.status-checking,
+.api-status.status-unknown {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--warning-color);
+}
+
+.retry-btn {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 4px;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+}
+
+.retry-btn:hover {
+  opacity: 0.8;
+}
+
+.spinning {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Navigation */
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.9375rem;
+  cursor: pointer;
+  border-radius: var(--radius);
+  transition: all 0.2s ease;
+  text-align: left;
+  width: 100%;
+}
+
+.nav-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-light);
+}
+
+.nav-item.active {
+  background: var(--primary-color);
+  color: white;
+}
+
+/* Workflow Hint */
+.workflow-hint {
+  margin-top: auto;
+  padding-top: 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.workflow-hint h4 {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+
+.workflow-hint ol {
+  list-style: none;
+  counter-reset: step;
+}
+
+.workflow-hint li {
+  counter-increment: step;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  padding: 6px 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.workflow-hint li::before {
+  content: counter(step);
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  flex-shrink: 0;
+}
+
+.workflow-hint li.current {
+  color: var(--primary-color);
+}
+
+.workflow-hint li.current::before {
+  background: var(--primary-color);
+  color: white;
+}
+
+/* ============================================================
+   MAIN CONTENT
+   ============================================================ */
+.main-content {
+  flex: 1;
+  margin-left: 260px;
+  padding: 32px;
+  min-height: 100vh;
+}
+
+.api-error-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid var(--error-color);
+  border-radius: var(--radius);
+  color: var(--error-color);
+  margin-bottom: 24px;
+  font-size: 0.875rem;
+}
+
+.api-error-banner code {
+  background: rgba(0, 0, 0, 0.1);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+}
+
+/* ============================================================
+   PAGE STYLES
+   ============================================================ */
+.page {
+  max-width: 1200px;
+}
+
+.page-header {
+  margin-bottom: 32px;
+}
+
+.page-header h2 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.page-header p {
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+   CARDS
+   ============================================================ */
+.card {
+  background: var(--bg-card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 24px;
+  margin-bottom: 24px;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.card-header h3 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.card-content {
+  /* Content styles */
+}
+
+/* ============================================================
+   STATS GRID
+   ============================================================ */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: var(--shadow);
+}
+
+.stat-card .label {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.stat-card .value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.stat-card .value.success {
+  color: var(--success-color);
+}
+
+.stat-card .value.error {
+  color: var(--error-color);
+}
+
+.stat-card .value.warning {
+  color: var(--warning-color);
+}
+
+/* ============================================================
+   BUTTONS
+   ============================================================ */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border: none;
+  border-radius: var(--radius);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--primary-color);
+  color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--primary-hover);
+}
+
+.btn-secondary {
+  background: var(--bg-light);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: var(--border-color);
+}
+
+.btn-success {
+  background: var(--success-color);
+  color: white;
+}
+
+.btn-success:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+/* ============================================================
+   FORMS
+   ============================================================ */
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 500;
+  margin-bottom: 6px;
+  color: var(--text-primary);
+}
+
+.form-group input,
+.form-group select {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  font-size: 0.9375rem;
+  transition: border-color 0.2s ease;
+}
+
+.form-group input:focus,
+.form-group select:focus {
+  outline: none;
+  border-color: var(--primary-color);
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+/* ============================================================
+   TABLES
+   ============================================================ */
+.table-container {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th, td {
+  padding: 12px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+}
+
+th {
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  background: var(--bg-light);
+}
+
+td {
+  font-size: 0.9375rem;
+}
+
+tr:hover {
+  background: var(--bg-light);
+}
+
+/* ============================================================
+   STATUS BADGES
+   ============================================================ */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.badge-success {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--success-color);
+}
+
+.badge-error {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--error-color);
+}
+
+.badge-warning {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--warning-color);
+}
+
+.badge-info {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--primary-color);
+}
+
+/* ============================================================
+   LOADING STATES
+   ============================================================ */
+.loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+  color: var(--text-secondary);
+}
+
+.loading .icon {
+  margin-bottom: 12px;
+}
+
+/* ============================================================
+   ALERTS
+   ============================================================ */
+.alert {
+  padding: 16px;
+  border-radius: var(--radius);
+  margin-bottom: 20px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.alert-success {
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid var(--success-color);
+  color: var(--success-color);
+}
+
+.alert-error {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid var(--error-color);
+  color: var(--error-color);
+}
+
+.alert-warning {
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid var(--warning-color);
+  color: var(--warning-color);
+}
+
+.alert-info {
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid var(--primary-color);
+  color: var(--primary-color);
+}
+
+/* ============================================================
+   PROGRESS
+   ============================================================ */
+.progress-bar {
+  height: 8px;
+  background: var(--border-color);
+  border-radius: 9999px;
+  overflow: hidden;
+}
+
+.progress-bar .fill {
+  height: 100%;
+  background: var(--primary-color);
+  transition: width 0.3s ease;
+}
+
+/* ============================================================
+   CLUSTER DISTRIBUTION
+   ============================================================ */
+.cluster-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cluster-bar-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.cluster-bar-item .label {
+  width: 80px;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.cluster-bar-item .bar {
+  flex: 1;
+  height: 24px;
+  background: var(--border-color);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.cluster-bar-item .bar .fill {
+  height: 100%;
+  background: var(--primary-color);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 8px;
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 500;
+  min-width: fit-content;
+}
+
+.cluster-bar-item .count {
+  width: 100px;
+  text-align: right;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+   CHART CONTAINER
+   ============================================================ */
+.chart-container {
+  width: 100%;
+  height: 300px;
+  margin-top: 20px;
+}
+
+/* ============================================================
+   TOGGLE SWITCH
+   ============================================================ */
+.toggle-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.toggle {
+  position: relative;
+  width: 48px;
+  height: 26px;
+  background: var(--border-color);
+  border-radius: 9999px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.toggle.active {
+  background: var(--primary-color);
+}
+
+.toggle .knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  background: white;
+  border-radius: 50%;
+  transition: transform 0.2s ease;
+  box-shadow: var(--shadow);
+}
+
+.toggle.active .knob {
+  transform: translateX(22px);
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 768px) {
+  .sidebar {
+    width: 100%;
+    height: auto;
+    position: relative;
+  }
+
+  .main-content {
+    margin-left: 0;
+  }
+
+  .app {
+    flex-direction: column;
+  }
+
+  .stats-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
