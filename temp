@@ -1,279 +1,256 @@
 /**
- * API Service - Handles all backend communication
+ * Data Page - Validate and view data information
  */
 
-import axios from 'axios';
-
-// Base URL for API
-const API_BASE_URL = 'http://127.0.0.1:8000/api';
-
-// Create axios instance
-const api = axios.create({
-  baseURL: API_BASE_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
-});
-
-// ============================================================
-// HEALTH & CONFIG
-// ============================================================
-
-export const checkHealth = async () => {
-  const response = await axios.get('http://127.0.0.1:8000/health');
-  return response.data;
-};
-
-export const getConfig = async () => {
-  const response = await api.get('/config');
-  return response.data;
-};
-
-export const updateConfig = async (updates) => {
-  const response = await api.put('/config', updates);
-  return response.data;
-};
-
-export const getAlgorithms = async () => {
-  const response = await api.get('/config/algorithms');
-  return response.data;
-};
-
-export const updateAlgorithm = async (algorithmName, enabled, parameters) => {
-  const params = new URLSearchParams();
-  if (enabled !== null) params.append('enabled', enabled);
-  
-  const response = await api.put(
-    `/config/algorithms/${algorithmName}?${params.toString()}`,
-    parameters || {}
-  );
-  return response.data;
-};
-
-// ============================================================
-// DATA
-// ============================================================
-
-export const validateData = async () => {
-  const response = await api.get('/data/validate');
-  return response.data;
-};
-
-export const getDataInfo = async () => {
-  const response = await api.get('/data/info');
-  return response.data;
-};
-
-// ============================================================
-// PIPELINE
-// ============================================================
-
-export const runFeatureEngineering = async (options = {}) => {
-  const response = await api.post('/pipeline/features', options);
-  return response.data;
-};
-
-export const compareAlgorithms = async (options = {}) => {
-  const response = await api.post('/pipeline/clustering/compare', options);
-  return response.data;
-};
-
-export const trainModel = async (algorithm, nClusters) => {
-  const response = await api.post('/pipeline/clustering/train', {
-    algorithm: algorithm,
-    n_clusters: nClusters,
-  });
-  return response.data;
-};
-
-// ============================================================
-// RESULTS
-// ============================================================
-
-export const getComparisonResults = async () => {
-  const response = await api.get('/results/comparison');
-  return response.data;
-};
-
-export const getClusterAssignments = async (algorithm) => {
-  const response = await api.get(`/results/clusters/${algorithm}`);
-  return response.data;
-};
-
-// Export default api instance for custom calls
-export default api;
-
-
-
-
-
-
-
-
-
-
-
-
-
-/**
- * Main App Component - Dashboard Layout
- */
-
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Database, 
-  Settings, 
-  PlayCircle, 
-  BarChart3, 
-  GitCompare,
-  Cpu,
-  CheckCircle,
-  XCircle,
+  CheckCircle, 
+  XCircle, 
+  AlertTriangle,
+  RefreshCw,
   Loader2,
-  RefreshCw
+  FileText,
+  Users,
+  LayoutGrid
 } from 'lucide-react';
-import './App.css';
+import { validateData, getDataInfo } from '../services/api';
 
-// Import pages
-import DataPage from './pages/DataPage';
-import ConfigPage from './pages/ConfigPage';
-import FeaturePage from './pages/FeaturePage';
-import ClusteringPage from './pages/ClusteringPage';
-import ResultsPage from './pages/ResultsPage';
+function DataPage() {
+  const [loading, setLoading] = useState(false);
+  const [validation, setValidation] = useState(null);
+  const [error, setError] = useState(null);
 
-function App() {
-  const [activePage, setActivePage] = useState('data');
-  const [apiStatus, setApiStatus] = useState('unknown'); // 'unknown', 'connected', 'error'
-
-  // Check API connection
-  const checkApiConnection = async () => {
-    setApiStatus('checking');
-    try {
-      const response = await fetch('http://127.0.0.1:8000/health');
-      if (response.ok) {
-        setApiStatus('connected');
-      } else {
-        setApiStatus('error');
-      }
-    } catch (error) {
-      setApiStatus('error');
-    }
-  };
-
-  // Check on mount
-  React.useEffect(() => {
-    checkApiConnection();
+  // Validate data on mount
+  useEffect(() => {
+    handleValidate();
   }, []);
 
-  // Navigation items
-  const navItems = [
-    { id: 'data', label: 'Data', icon: Database },
-    { id: 'config', label: 'Configuration', icon: Settings },
-    { id: 'features', label: 'Feature Engineering', icon: Cpu },
-    { id: 'clustering', label: 'Clustering', icon: GitCompare },
-    { id: 'results', label: 'Results', icon: BarChart3 },
-  ];
-
-  // Render active page
-  const renderPage = () => {
-    switch (activePage) {
-      case 'data':
-        return <DataPage />;
-      case 'config':
-        return <ConfigPage />;
-      case 'features':
-        return <FeaturePage />;
-      case 'clustering':
-        return <ClusteringPage />;
-      case 'results':
-        return <ResultsPage />;
-      default:
-        return <DataPage />;
+  const handleValidate = async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const result = await validateData();
+      setValidation(result);
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Failed to validate data');
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <div className="app">
-      {/* Sidebar */}
-      <aside className="sidebar">
-        <div className="sidebar-header">
-          <h1>🎯 User Clustering</h1>
-          <p>Samsung Analytics</p>
-        </div>
+    <div className="page">
+      {/* Header */}
+      <div className="page-header">
+        <h2>Data Validation</h2>
+        <p>Validate your data before running the pipeline</p>
+      </div>
 
-        {/* API Status */}
-        <div className={`api-status status-${apiStatus}`}>
-          {apiStatus === 'checking' && (
+      {/* Actions */}
+      <div style={{ marginBottom: '24px' }}>
+        <button 
+          className="btn btn-primary" 
+          onClick={handleValidate}
+          disabled={loading}
+        >
+          {loading ? (
             <>
-              <Loader2 className="icon spinning" size={16} />
-              <span>Connecting...</span>
+              <Loader2 className="spinning" size={18} />
+              Validating...
+            </>
+          ) : (
+            <>
+              <RefreshCw size={18} />
+              Validate Data
             </>
           )}
-          {apiStatus === 'connected' && (
-            <>
-              <CheckCircle className="icon" size={16} />
-              <span>API Connected</span>
-            </>
-          )}
-          {apiStatus === 'error' && (
-            <>
-              <XCircle className="icon" size={16} />
-              <span>API Offline</span>
-              <button onClick={checkApiConnection} className="retry-btn">
-                <RefreshCw size={14} />
-              </button>
-            </>
-          )}
-          {apiStatus === 'unknown' && (
-            <>
-              <Loader2 className="icon" size={16} />
-              <span>Checking...</span>
-            </>
-          )}
-        </div>
+        </button>
+      </div>
 
-        {/* Navigation */}
-        <nav className="nav">
-          {navItems.map((item) => (
-            <button
-              key={item.id}
-              className={`nav-item ${activePage === item.id ? 'active' : ''}`}
-              onClick={() => setActivePage(item.id)}
-            >
-              <item.icon size={20} />
-              <span>{item.label}</span>
-            </button>
-          ))}
-        </nav>
-
-        {/* Workflow hint */}
-        <div className="workflow-hint">
-          <h4>Workflow</h4>
-          <ol>
-            <li className={activePage === 'data' ? 'current' : ''}>Validate Data</li>
-            <li className={activePage === 'config' ? 'current' : ''}>Configure</li>
-            <li className={activePage === 'features' ? 'current' : ''}>Features</li>
-            <li className={activePage === 'clustering' ? 'current' : ''}>Cluster</li>
-            <li className={activePage === 'results' ? 'current' : ''}>Results</li>
-          </ol>
-        </div>
-      </aside>
-
-      {/* Main Content */}
-      <main className="main-content">
-        {apiStatus === 'error' ? (
-          <div className="api-error-banner">
-            <XCircle size={20} />
-            <span>Backend API is not running. Start it with: <code>uvicorn api.main:app --reload --port 8000</code></span>
+      {/* Error Alert */}
+      {error && (
+        <div className="alert alert-error">
+          <XCircle size={20} />
+          <div>
+            <strong>Error:</strong> {error}
           </div>
-        ) : null}
-        {renderPage()}
-      </main>
+        </div>
+      )}
+
+      {/* Loading State */}
+      {loading && !validation && (
+        <div className="loading">
+          <Loader2 className="spinning" size={40} />
+          <p>Validating data...</p>
+        </div>
+      )}
+
+      {/* Validation Results */}
+      {validation && (
+        <>
+          {/* Status Card */}
+          <div className="card">
+            <div className="card-header">
+              <h3>
+                {validation.valid ? (
+                  <><CheckCircle size={20} color="var(--success-color)" /> Validation Passed</>
+                ) : (
+                  <><XCircle size={20} color="var(--error-color)" /> Validation Failed</>
+                )}
+              </h3>
+              <span className={`badge ${validation.valid ? 'badge-success' : 'badge-error'}`}>
+                {validation.valid ? 'Ready' : 'Issues Found'}
+              </span>
+            </div>
+            
+            <div className="card-content">
+              {/* Stats Grid */}
+              <div className="stats-grid">
+                <div className="stat-card">
+                  <div className="label">
+                    <Users size={16} style={{ marginRight: '6px', verticalAlign: 'middle' }} />
+                    Total Users
+                  </div>
+                  <div className="value">{validation.n_users?.toLocaleString() || 0}</div>
+                </div>
+                
+                <div className="stat-card">
+                  <div className="label">
+                    <LayoutGrid size={16} style={{ marginRight: '6px', verticalAlign: 'middle' }} />
+                    Features (Genres)
+                  </div>
+                  <div className="value">{validation.n_features?.toLocaleString() || 0}</div>
+                </div>
+                
+                <div className="stat-card">
+                  <div className="label">
+                    <FileText size={16} style={{ marginRight: '6px', verticalAlign: 'middle' }} />
+                    User ID Column
+                  </div>
+                  <div className="value" style={{ fontSize: '1.25rem' }}>{validation.user_id_column || 'N/A'}</div>
+                </div>
+                
+                <div className="stat-card">
+                  <div className="label">Unique Users</div>
+                  <div className={`value ${validation.users_unique ? 'success' : 'error'}`}>
+                    {validation.users_unique ? '✓ Yes' : '✗ No'}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* File Path Card */}
+          <div className="card">
+            <div className="card-header">
+              <h3><FileText size={20} /> Data File</h3>
+            </div>
+            <div className="card-content">
+              <code style={{ 
+                display: 'block',
+                padding: '12px 16px',
+                background: 'var(--bg-light)',
+                borderRadius: 'var(--radius)',
+                fontSize: '0.875rem'
+              }}>
+                {validation.file_path}
+              </code>
+            </div>
+          </div>
+
+          {/* Issues */}
+          {validation.issues && validation.issues.length > 0 && (
+            <div className="card">
+              <div className="card-header">
+                <h3><XCircle size={20} color="var(--error-color)" /> Issues</h3>
+              </div>
+              <div className="card-content">
+                {validation.issues.map((issue, index) => (
+                  <div key={index} className="alert alert-error" style={{ marginBottom: '8px' }}>
+                    <XCircle size={18} />
+                    <span>{issue}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Warnings */}
+          {validation.warnings && validation.warnings.length > 0 && (
+            <div className="card">
+              <div className="card-header">
+                <h3><AlertTriangle size={20} color="var(--warning-color)" /> Warnings</h3>
+              </div>
+              <div className="card-content">
+                {validation.warnings.map((warning, index) => (
+                  <div key={index} className="alert alert-warning" style={{ marginBottom: '8px' }}>
+                    <AlertTriangle size={18} />
+                    <span>{warning}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Feature Columns Preview */}
+          {validation.feature_columns && validation.feature_columns.length > 0 && (
+            <div className="card">
+              <div className="card-header">
+                <h3><LayoutGrid size={20} /> Feature Columns (Preview)</h3>
+                <span className="badge badge-info">{validation.n_features} total</span>
+              </div>
+              <div className="card-content">
+                <div style={{ 
+                  display: 'flex', 
+                  flexWrap: 'wrap', 
+                  gap: '8px' 
+                }}>
+                  {validation.feature_columns.slice(0, 30).map((col, index) => (
+                    <span 
+                      key={index}
+                      style={{
+                        padding: '4px 12px',
+                        background: 'var(--bg-light)',
+                        borderRadius: '9999px',
+                        fontSize: '0.8125rem'
+                      }}
+                    >
+                      {col}
+                    </span>
+                  ))}
+                  {validation.feature_columns.length > 30 && (
+                    <span style={{
+                      padding: '4px 12px',
+                      background: 'var(--primary-color)',
+                      color: 'white',
+                      borderRadius: '9999px',
+                      fontSize: '0.8125rem'
+                    }}>
+                      +{validation.feature_columns.length - 30} more
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
 
-export default App;
+export default DataPage;
+
+
+
+
+
+
+
+
+
 
 
 
@@ -286,692 +263,1464 @@ export default App;
 
 
 /**
- * Dashboard Styles
+ * Config Page - View and update pipeline configuration
  */
 
-/* ============================================================
-   CSS VARIABLES
-   ============================================================ */
-:root {
-  --primary-color: #3b82f6;
-  --primary-hover: #2563eb;
-  --success-color: #10b981;
-  --warning-color: #f59e0b;
-  --error-color: #ef4444;
-  --bg-dark: #1e293b;
-  --bg-darker: #0f172a;
-  --bg-light: #f8fafc;
-  --bg-card: #ffffff;
-  --text-primary: #1e293b;
-  --text-secondary: #64748b;
-  --text-light: #f8fafc;
-  --border-color: #e2e8f0;
-  --shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-  --shadow-lg: 0 4px 6px rgba(0, 0, 0, 0.1);
-  --radius: 8px;
-  --radius-lg: 12px;
-}
-
-/* ============================================================
-   RESET & BASE
-   ============================================================ */
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background-color: var(--bg-light);
-  color: var(--text-primary);
-  line-height: 1.5;
-}
-
-/* ============================================================
-   APP LAYOUT
-   ============================================================ */
-.app {
-  display: flex;
-  min-height: 100vh;
-}
-
-/* ============================================================
-   SIDEBAR
-   ============================================================ */
-.sidebar {
-  width: 260px;
-  background: var(--bg-dark);
-  color: var(--text-light);
-  padding: 24px 16px;
-  display: flex;
-  flex-direction: column;
-  position: fixed;
-  height: 100vh;
-  overflow-y: auto;
-}
-
-.sidebar-header {
-  margin-bottom: 24px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.sidebar-header h1 {
-  font-size: 1.25rem;
-  font-weight: 700;
-  margin-bottom: 4px;
-}
-
-.sidebar-header p {
-  font-size: 0.875rem;
-  color: var(--text-secondary);
-}
-
-/* API Status */
-.api-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  border-radius: var(--radius);
-  margin-bottom: 20px;
-  font-size: 0.875rem;
-}
-
-.api-status .icon {
-  flex-shrink: 0;
-}
-
-.api-status.status-connected {
-  background: rgba(16, 185, 129, 0.15);
-  color: var(--success-color);
-}
-
-.api-status.status-error {
-  background: rgba(239, 68, 68, 0.15);
-  color: var(--error-color);
-}
-
-.api-status.status-checking,
-.api-status.status-unknown {
-  background: rgba(245, 158, 11, 0.15);
-  color: var(--warning-color);
-}
-
-.retry-btn {
-  background: none;
-  border: none;
-  color: inherit;
-  cursor: pointer;
-  padding: 4px;
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-}
-
-.retry-btn:hover {
-  opacity: 0.8;
-}
-
-.spinning {
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-/* Navigation */
-.nav {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  border: none;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 0.9375rem;
-  cursor: pointer;
-  border-radius: var(--radius);
-  transition: all 0.2s ease;
-  text-align: left;
-  width: 100%;
-}
-
-.nav-item:hover {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text-light);
-}
-
-.nav-item.active {
-  background: var(--primary-color);
-  color: white;
-}
-
-/* Workflow Hint */
-.workflow-hint {
-  margin-top: auto;
-  padding-top: 20px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.workflow-hint h4 {
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-secondary);
-  margin-bottom: 12px;
-}
-
-.workflow-hint ol {
-  list-style: none;
-  counter-reset: step;
-}
-
-.workflow-hint li {
-  counter-increment: step;
-  font-size: 0.8125rem;
-  color: var(--text-secondary);
-  padding: 6px 0;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.workflow-hint li::before {
-  content: counter(step);
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.1);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.75rem;
-  flex-shrink: 0;
-}
-
-.workflow-hint li.current {
-  color: var(--primary-color);
-}
-
-.workflow-hint li.current::before {
-  background: var(--primary-color);
-  color: white;
-}
-
-/* ============================================================
-   MAIN CONTENT
-   ============================================================ */
-.main-content {
-  flex: 1;
-  margin-left: 260px;
-  padding: 32px;
-  min-height: 100vh;
-}
-
-.api-error-banner {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  background: rgba(239, 68, 68, 0.1);
-  border: 1px solid var(--error-color);
-  border-radius: var(--radius);
-  color: var(--error-color);
-  margin-bottom: 24px;
-  font-size: 0.875rem;
-}
-
-.api-error-banner code {
-  background: rgba(0, 0, 0, 0.1);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-family: monospace;
-}
-
-/* ============================================================
-   PAGE STYLES
-   ============================================================ */
-.page {
-  max-width: 1200px;
-}
-
-.page-header {
-  margin-bottom: 32px;
-}
-
-.page-header h2 {
-  font-size: 1.75rem;
-  font-weight: 700;
-  margin-bottom: 8px;
-}
-
-.page-header p {
-  color: var(--text-secondary);
-}
-
-/* ============================================================
-   CARDS
-   ============================================================ */
-.card {
-  background: var(--bg-card);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow);
-  padding: 24px;
-  margin-bottom: 24px;
-}
-
-.card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 20px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.card-header h3 {
-  font-size: 1.125rem;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.card-content {
-  /* Content styles */
-}
-
-/* ============================================================
-   STATS GRID
-   ============================================================ */
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 16px;
-  margin-bottom: 24px;
-}
-
-.stat-card {
-  background: var(--bg-card);
-  border-radius: var(--radius);
-  padding: 20px;
-  box-shadow: var(--shadow);
-}
-
-.stat-card .label {
-  font-size: 0.875rem;
-  color: var(--text-secondary);
-  margin-bottom: 4px;
-}
-
-.stat-card .value {
-  font-size: 1.5rem;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.stat-card .value.success {
-  color: var(--success-color);
-}
-
-.stat-card .value.error {
-  color: var(--error-color);
-}
-
-.stat-card .value.warning {
-  color: var(--warning-color);
-}
-
-/* ============================================================
-   BUTTONS
-   ============================================================ */
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 10px 20px;
-  border: none;
-  border-radius: var(--radius);
-  font-size: 0.9375rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.btn-primary {
-  background: var(--primary-color);
-  color: white;
-}
-
-.btn-primary:hover:not(:disabled) {
-  background: var(--primary-hover);
-}
-
-.btn-secondary {
-  background: var(--bg-light);
-  color: var(--text-primary);
-  border: 1px solid var(--border-color);
-}
-
-.btn-secondary:hover:not(:disabled) {
-  background: var(--border-color);
-}
-
-.btn-success {
-  background: var(--success-color);
-  color: white;
-}
-
-.btn-success:hover:not(:disabled) {
-  opacity: 0.9;
-}
-
-/* ============================================================
-   FORMS
-   ============================================================ */
-.form-group {
-  margin-bottom: 20px;
-}
-
-.form-group label {
-  display: block;
-  font-size: 0.875rem;
-  font-weight: 500;
-  margin-bottom: 6px;
-  color: var(--text-primary);
-}
-
-.form-group input,
-.form-group select {
-  width: 100%;
-  padding: 10px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius);
-  font-size: 0.9375rem;
-  transition: border-color 0.2s ease;
-}
-
-.form-group input:focus,
-.form-group select:focus {
-  outline: none;
-  border-color: var(--primary-color);
-}
-
-.form-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 16px;
-}
-
-/* ============================================================
-   TABLES
-   ============================================================ */
-.table-container {
-  overflow-x: auto;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-th, td {
-  padding: 12px 16px;
-  text-align: left;
-  border-bottom: 1px solid var(--border-color);
-}
-
-th {
-  font-weight: 600;
-  font-size: 0.875rem;
-  color: var(--text-secondary);
-  background: var(--bg-light);
-}
-
-td {
-  font-size: 0.9375rem;
-}
-
-tr:hover {
-  background: var(--bg-light);
-}
-
-/* ============================================================
-   STATUS BADGES
-   ============================================================ */
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: 9999px;
-  font-size: 0.8125rem;
-  font-weight: 500;
-}
-
-.badge-success {
-  background: rgba(16, 185, 129, 0.15);
-  color: var(--success-color);
-}
-
-.badge-error {
-  background: rgba(239, 68, 68, 0.15);
-  color: var(--error-color);
-}
-
-.badge-warning {
-  background: rgba(245, 158, 11, 0.15);
-  color: var(--warning-color);
-}
-
-.badge-info {
-  background: rgba(59, 130, 246, 0.15);
-  color: var(--primary-color);
-}
-
-/* ============================================================
-   LOADING STATES
-   ============================================================ */
-.loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 48px;
-  color: var(--text-secondary);
-}
-
-.loading .icon {
-  margin-bottom: 12px;
-}
-
-/* ============================================================
-   ALERTS
-   ============================================================ */
-.alert {
-  padding: 16px;
-  border-radius: var(--radius);
-  margin-bottom: 20px;
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-.alert-success {
-  background: rgba(16, 185, 129, 0.1);
-  border: 1px solid var(--success-color);
-  color: var(--success-color);
-}
-
-.alert-error {
-  background: rgba(239, 68, 68, 0.1);
-  border: 1px solid var(--error-color);
-  color: var(--error-color);
-}
-
-.alert-warning {
-  background: rgba(245, 158, 11, 0.1);
-  border: 1px solid var(--warning-color);
-  color: var(--warning-color);
-}
-
-.alert-info {
-  background: rgba(59, 130, 246, 0.1);
-  border: 1px solid var(--primary-color);
-  color: var(--primary-color);
-}
-
-/* ============================================================
-   PROGRESS
-   ============================================================ */
-.progress-bar {
-  height: 8px;
-  background: var(--border-color);
-  border-radius: 9999px;
-  overflow: hidden;
-}
-
-.progress-bar .fill {
-  height: 100%;
-  background: var(--primary-color);
-  transition: width 0.3s ease;
-}
-
-/* ============================================================
-   CLUSTER DISTRIBUTION
-   ============================================================ */
-.cluster-bars {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.cluster-bar-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.cluster-bar-item .label {
-  width: 80px;
-  font-size: 0.875rem;
-  font-weight: 500;
-}
-
-.cluster-bar-item .bar {
-  flex: 1;
-  height: 24px;
-  background: var(--border-color);
-  border-radius: var(--radius);
-  overflow: hidden;
-}
-
-.cluster-bar-item .bar .fill {
-  height: 100%;
-  background: var(--primary-color);
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  padding-right: 8px;
-  color: white;
-  font-size: 0.75rem;
-  font-weight: 500;
-  min-width: fit-content;
-}
-
-.cluster-bar-item .count {
-  width: 100px;
-  text-align: right;
-  font-size: 0.875rem;
-  color: var(--text-secondary);
-}
-
-/* ============================================================
-   CHART CONTAINER
-   ============================================================ */
-.chart-container {
-  width: 100%;
-  height: 300px;
-  margin-top: 20px;
-}
-
-/* ============================================================
-   TOGGLE SWITCH
-   ============================================================ */
-.toggle-container {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.toggle {
-  position: relative;
-  width: 48px;
-  height: 26px;
-  background: var(--border-color);
-  border-radius: 9999px;
-  cursor: pointer;
-  transition: background 0.2s ease;
-}
-
-.toggle.active {
-  background: var(--primary-color);
-}
-
-.toggle .knob {
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 20px;
-  height: 20px;
-  background: white;
-  border-radius: 50%;
-  transition: transform 0.2s ease;
-  box-shadow: var(--shadow);
-}
-
-.toggle.active .knob {
-  transform: translateX(22px);
-}
-
-/* ============================================================
-   RESPONSIVE
-   ============================================================ */
-@media (max-width: 768px) {
-  .sidebar {
-    width: 100%;
-    height: auto;
-    position: relative;
+import React, { useState, useEffect } from 'react';
+import { 
+  Settings, 
+  Save,
+  RefreshCw,
+  Loader2,
+  CheckCircle,
+  XCircle,
+  Sliders,
+  Cpu,
+  AlertCircle
+} from 'lucide-react';
+import { getConfig, updateConfig, getAlgorithms, updateAlgorithm } from '../services/api';
+
+function ConfigPage() {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [config, setConfig] = useState(null);
+  const [algorithms, setAlgorithms] = useState([]);
+  const [error, setError] = useState(null);
+  const [success, setSuccess] = useState(null);
+
+  // Form state
+  const [normalization, setNormalization] = useState('balanced');
+  const [svdEnabled, setSvdEnabled] = useState(true);
+  const [svdComponents, setSvdComponents] = useState(50);
+  const [kMin, setKMin] = useState(3);
+  const [kMax, setKMax] = useState(20);
+
+  // Load config on mount
+  useEffect(() => {
+    loadConfig();
+  }, []);
+
+  const loadConfig = async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const [configData, algoData] = await Promise.all([
+        getConfig(),
+        getAlgorithms()
+      ]);
+      
+      setConfig(configData);
+      setAlgorithms(algoData.algorithms || []);
+      
+      // Set form values from config
+      setNormalization(configData.preprocessing?.normalization || 'balanced');
+      setSvdEnabled(configData.preprocessing?.dimensionality_reduction?.enabled ?? true);
+      setSvdComponents(configData.preprocessing?.dimensionality_reduction?.n_components || 50);
+      setKMin(configData.clustering?.k_range?.min || 3);
+      setKMax(configData.clustering?.k_range?.max || 20);
+      
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Failed to load configuration');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSaveConfig = async () => {
+    setSaving(true);
+    setError(null);
+    setSuccess(null);
+    
+    try {
+      const updates = {
+        preprocessing: {
+          normalization: normalization,
+          dimensionality_reduction: {
+            enabled: svdEnabled,
+            method: 'svd',
+            n_components: parseInt(svdComponents)
+          }
+        },
+        clustering: {
+          k_range: {
+            min: parseInt(kMin),
+            max: parseInt(kMax)
+          }
+        }
+      };
+      
+      await updateConfig(updates);
+      setSuccess('Configuration saved successfully!');
+      
+      // Reload config
+      await loadConfig();
+      
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Failed to save configuration');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleToggleAlgorithm = async (algoName, currentEnabled) => {
+    try {
+      await updateAlgorithm(algoName, !currentEnabled, null);
+      
+      // Update local state
+      setAlgorithms(prev => prev.map(algo => 
+        algo.name === algoName ? { ...algo, enabled: !currentEnabled } : algo
+      ));
+      
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Failed to update algorithm');
+    }
+  };
+
+  // Normalization options
+  const normalizationOptions = [
+    { value: 'none', label: 'None', description: 'No normalization' },
+    { value: 'minmax', label: 'Min-Max', description: 'Scale to 0-1 range' },
+    { value: 'standard', label: 'Standard', description: 'Mean=0, Std=1' },
+    { value: 'tfidf', label: 'TF-IDF', description: 'Term frequency weighting' },
+    { value: 'log_tfidf', label: 'Log + TF-IDF', description: 'Log transform + TF-IDF' },
+    { value: 'balanced', label: 'Balanced (Recommended)', description: 'Log → TF-IDF → Standard → L2' },
+  ];
+
+  if (loading) {
+    return (
+      <div className="page">
+        <div className="loading">
+          <Loader2 className="spinning" size={40} />
+          <p>Loading configuration...</p>
+        </div>
+      </div>
+    );
   }
 
-  .main-content {
-    margin-left: 0;
-  }
+  return (
+    <div className="page">
+      {/* Header */}
+      <div className="page-header">
+        <h2>Configuration</h2>
+        <p>Customize preprocessing, algorithms, and clustering parameters</p>
+      </div>
 
-  .app {
-    flex-direction: column;
-  }
+      {/* Alerts */}
+      {error && (
+        <div className="alert alert-error">
+          <XCircle size={20} />
+          <span>{error}</span>
+        </div>
+      )}
+      
+      {success && (
+        <div className="alert alert-success">
+          <CheckCircle size={20} />
+          <span>{success}</span>
+        </div>
+      )}
 
-  .stats-grid {
-    grid-template-columns: 1fr;
-  }
+      {/* Preprocessing Card */}
+      <div className="card">
+        <div className="card-header">
+          <h3><Sliders size={20} /> Preprocessing</h3>
+        </div>
+        <div className="card-content">
+          {/* Normalization */}
+          <div className="form-group">
+            <label>Normalization Method</label>
+            <select 
+              value={normalization} 
+              onChange={(e) => setNormalization(e.target.value)}
+            >
+              {normalizationOptions.map(opt => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label} - {opt.description}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* SVD Settings */}
+          <div className="form-group">
+            <label>Dimensionality Reduction (SVD)</label>
+            <div className="toggle-container" style={{ marginBottom: '12px' }}>
+              <div 
+                className={`toggle ${svdEnabled ? 'active' : ''}`}
+                onClick={() => setSvdEnabled(!svdEnabled)}
+              >
+                <div className="knob"></div>
+              </div>
+              <span>{svdEnabled ? 'Enabled' : 'Disabled'}</span>
+            </div>
+            
+            {svdEnabled && (
+              <div className="form-row">
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>Number of Components</label>
+                  <input 
+                    type="number" 
+                    value={svdComponents}
+                    onChange={(e) => setSvdComponents(e.target.value)}
+                    min="10"
+                    max="200"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Clustering Parameters Card */}
+      <div className="card">
+        <div className="card-header">
+          <h3><Cpu size={20} /> Clustering Parameters</h3>
+        </div>
+        <div className="card-content">
+          <div className="form-row">
+            <div className="form-group">
+              <label>Minimum K (Clusters)</label>
+              <input 
+                type="number" 
+                value={kMin}
+                onChange={(e) => setKMin(e.target.value)}
+                min="2"
+                max="50"
+              />
+            </div>
+            <div className="form-group">
+              <label>Maximum K (Clusters)</label>
+              <input 
+                type="number" 
+                value={kMax}
+                onChange={(e) => setKMax(e.target.value)}
+                min="2"
+                max="50"
+              />
+            </div>
+          </div>
+          
+          <div className="alert alert-info" style={{ marginTop: '8px' }}>
+            <AlertCircle size={18} />
+            <span>The comparison will test all K values from {kMin} to {kMax}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Algorithms Card */}
+      <div className="card">
+        <div className="card-header">
+          <h3><Cpu size={20} /> Clustering Algorithms</h3>
+          <span className="badge badge-info">
+            {algorithms.filter(a => a.enabled).length} enabled
+          </span>
+        </div>
+        <div className="card-content">
+          <div className="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Algorithm</th>
+                  <th>Status</th>
+                  <th>Parameters</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {algorithms.map((algo) => (
+                  <tr key={algo.name}>
+                    <td>
+                      <strong>{algo.display_name || algo.name}</strong>
+                    </td>
+                    <td>
+                      <span className={`badge ${algo.enabled ? 'badge-success' : 'badge-error'}`}>
+                        {algo.enabled ? 'Enabled' : 'Disabled'}
+                      </span>
+                    </td>
+                    <td>
+                      <code style={{ fontSize: '0.8125rem' }}>
+                        {Object.entries(algo.parameters || {}).map(([key, val]) => (
+                          `${key}=${val}`
+                        )).join(', ') || 'Default'}
+                      </code>
+                    </td>
+                    <td>
+                      <div 
+                        className={`toggle ${algo.enabled ? 'active' : ''}`}
+                        onClick={() => handleToggleAlgorithm(algo.name, algo.enabled)}
+                        style={{ cursor: 'pointer' }}
+                      >
+                        <div className="knob"></div>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      {/* Save Button */}
+      <div style={{ display: 'flex', gap: '12px', marginTop: '24px' }}>
+        <button 
+          className="btn btn-primary"
+          onClick={handleSaveConfig}
+          disabled={saving}
+        >
+          {saving ? (
+            <>
+              <Loader2 className="spinning" size={18} />
+              Saving...
+            </>
+          ) : (
+            <>
+              <Save size={18} />
+              Save Configuration
+            </>
+          )}
+        </button>
+        
+        <button 
+          className="btn btn-secondary"
+          onClick={loadConfig}
+          disabled={loading}
+        >
+          <RefreshCw size={18} />
+          Reset
+        </button>
+      </div>
+    </div>
+  );
 }
+
+export default ConfigPage;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**
+ * Feature Page - Run feature engineering pipeline
+ */
+
+import React, { useState } from 'react';
+import { 
+  Cpu, 
+  PlayCircle,
+  Loader2,
+  CheckCircle,
+  XCircle,
+  ArrowRight,
+  Sparkles,
+  TrendingDown
+} from 'lucide-react';
+import { runFeatureEngineering } from '../services/api';
+
+function FeaturePage() {
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+
+  // Form state
+  const [normalization, setNormalization] = useState('balanced');
+  const [useSvd, setUseSvd] = useState(true);
+  const [nComponents, setNComponents] = useState(50);
+
+  const handleRunFeatureEngineering = async () => {
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    
+    try {
+      const options = {
+        normalization: normalization,
+        use_svd: useSvd,
+        n_components: parseInt(nComponents)
+      };
+      
+      const response = await runFeatureEngineering(options);
+      setResult(response);
+      
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Feature engineering failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const normalizationOptions = [
+    { value: 'none', label: 'None' },
+    { value: 'minmax', label: 'Min-Max' },
+    { value: 'standard', label: 'Standard' },
+    { value: 'tfidf', label: 'TF-IDF' },
+    { value: 'log_tfidf', label: 'Log + TF-IDF' },
+    { value: 'balanced', label: 'Balanced (Recommended)' },
+  ];
+
+  return (
+    <div className="page">
+      {/* Header */}
+      <div className="page-header">
+        <h2>Feature Engineering</h2>
+        <p>Transform and normalize your data for clustering</p>
+      </div>
+
+      {/* Settings Card */}
+      <div className="card">
+        <div className="card-header">
+          <h3><Cpu size={20} /> Settings</h3>
+        </div>
+        <div className="card-content">
+          <div className="form-row">
+            {/* Normalization */}
+            <div className="form-group">
+              <label>Normalization Method</label>
+              <select 
+                value={normalization} 
+                onChange={(e) => setNormalization(e.target.value)}
+              >
+                {normalizationOptions.map(opt => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* SVD Components */}
+            <div className="form-group">
+              <label>SVD Components</label>
+              <input 
+                type="number" 
+                value={nComponents}
+                onChange={(e) => setNComponents(e.target.value)}
+                min="10"
+                max="200"
+                disabled={!useSvd}
+              />
+            </div>
+          </div>
+
+          {/* SVD Toggle */}
+          <div className="form-group">
+            <label>Dimensionality Reduction</label>
+            <div className="toggle-container">
+              <div 
+                className={`toggle ${useSvd ? 'active' : ''}`}
+                onClick={() => setUseSvd(!useSvd)}
+              >
+                <div className="knob"></div>
+              </div>
+              <span>{useSvd ? 'SVD Enabled' : 'SVD Disabled'}</span>
+            </div>
+          </div>
+
+          {/* Run Button */}
+          <button 
+            className="btn btn-primary"
+            onClick={handleRunFeatureEngineering}
+            disabled={loading}
+            style={{ marginTop: '16px' }}
+          >
+            {loading ? (
+              <>
+                <Loader2 className="spinning" size={18} />
+                Processing...
+              </>
+            ) : (
+              <>
+                <PlayCircle size={18} />
+                Run Feature Engineering
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Error Alert */}
+      {error && (
+        <div className="alert alert-error">
+          <XCircle size={20} />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {/* Results */}
+      {result && (
+        <>
+          {/* Success Alert */}
+          <div className="alert alert-success">
+            <CheckCircle size={20} />
+            <span>{result.message}</span>
+          </div>
+
+          {/* Transformation Summary */}
+          <div className="card">
+            <div className="card-header">
+              <h3><Sparkles size={20} /> Transformation Summary</h3>
+            </div>
+            <div className="card-content">
+              {/* Before/After Visual */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '24px',
+                padding: '24px',
+                background: 'var(--bg-light)',
+                borderRadius: 'var(--radius-lg)',
+                marginBottom: '24px'
+              }}>
+                {/* Input */}
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ 
+                    fontSize: '0.875rem', 
+                    color: 'var(--text-secondary)',
+                    marginBottom: '8px'
+                  }}>
+                    Input
+                  </div>
+                  <div style={{ 
+                    fontSize: '2rem', 
+                    fontWeight: '700',
+                    color: 'var(--text-primary)'
+                  }}>
+                    {result.input_shape?.users?.toLocaleString()}
+                  </div>
+                  <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                    users
+                  </div>
+                  <div style={{ 
+                    fontSize: '1.5rem', 
+                    fontWeight: '600',
+                    color: 'var(--primary-color)',
+                    marginTop: '4px'
+                  }}>
+                    × {result.input_shape?.features}
+                  </div>
+                  <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                    features
+                  </div>
+                </div>
+
+                {/* Arrow */}
+                <ArrowRight size={32} color="var(--primary-color)" />
+
+                {/* Output */}
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ 
+                    fontSize: '0.875rem', 
+                    color: 'var(--text-secondary)',
+                    marginBottom: '8px'
+                  }}>
+                    Output
+                  </div>
+                  <div style={{ 
+                    fontSize: '2rem', 
+                    fontWeight: '700',
+                    color: 'var(--text-primary)'
+                  }}>
+                    {result.output_shape?.users?.toLocaleString()}
+                  </div>
+                  <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                    users
+                  </div>
+                  <div style={{ 
+                    fontSize: '1.5rem', 
+                    fontWeight: '600',
+                    color: 'var(--success-color)',
+                    marginTop: '4px'
+                  }}>
+                    × {result.output_shape?.features}
+                  </div>
+                  <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                    components
+                  </div>
+                </div>
+              </div>
+
+              {/* Stats Grid */}
+              <div className="stats-grid">
+                <div className="stat-card">
+                  <div className="label">Normalization</div>
+                  <div className="value" style={{ fontSize: '1.125rem' }}>
+                    {result.normalization_method}
+                  </div>
+                </div>
+                
+                <div className="stat-card">
+                  <div className="label">SVD Applied</div>
+                  <div className={`value ${result.svd_applied ? 'success' : ''}`}>
+                    {result.svd_applied ? '✓ Yes' : '✗ No'}
+                  </div>
+                </div>
+                
+                {result.explained_variance && (
+                  <div className="stat-card">
+                    <div className="label">
+                      <TrendingDown size={16} style={{ marginRight: '6px', verticalAlign: 'middle' }} />
+                      Explained Variance
+                    </div>
+                    <div className="value success">
+                      {result.explained_variance.toFixed(2)}%
+                    </div>
+                  </div>
+                )}
+                
+                <div className="stat-card">
+                  <div className="label">Dimension Reduction</div>
+                  <div className="value" style={{ fontSize: '1.125rem' }}>
+                    {result.input_shape?.features} → {result.output_shape?.features}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Output File */}
+          <div className="card">
+            <div className="card-header">
+              <h3>Output File</h3>
+            </div>
+            <div className="card-content">
+              <code style={{ 
+                display: 'block',
+                padding: '12px 16px',
+                background: 'var(--bg-light)',
+                borderRadius: 'var(--radius)',
+                fontSize: '0.875rem'
+              }}>
+                {result.output_file}
+              </code>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+export default FeaturePage;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**
+ * Clustering Page - Compare algorithms and train models
+ */
+
+import React, { useState } from 'react';
+import { 
+  GitCompare, 
+  PlayCircle,
+  Loader2,
+  CheckCircle,
+  XCircle,
+  Target,
+  Award,
+  TrendingUp
+} from 'lucide-react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { compareAlgorithms, trainModel } from '../services/api';
+
+function ClusteringPage() {
+  const [loading, setLoading] = useState(false);
+  const [training, setTraining] = useState(false);
+  const [comparisonResult, setComparisonResult] = useState(null);
+  const [trainResult, setTrainResult] = useState(null);
+  const [error, setError] = useState(null);
+
+  // Form state
+  const [kMin, setKMin] = useState(3);
+  const [kMax, setKMax] = useState(15);
+  const [selectedAlgorithm, setSelectedAlgorithm] = useState('minibatch_kmeans');
+  const [selectedK, setSelectedK] = useState(10);
+
+  const handleCompare = async () => {
+    setLoading(true);
+    setError(null);
+    setComparisonResult(null);
+    
+    try {
+      const options = {
+        k_min: parseInt(kMin),
+        k_max: parseInt(kMax)
+      };
+      
+      const response = await compareAlgorithms(options);
+      setComparisonResult(response);
+      
+      // Auto-select best algorithm and k
+      if (response.best_overall) {
+        setSelectedAlgorithm(response.best_overall.algorithm);
+        setSelectedK(response.best_overall.k);
+      }
+      
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Comparison failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleTrain = async () => {
+    setTraining(true);
+    setError(null);
+    setTrainResult(null);
+    
+    try {
+      const response = await trainModel(selectedAlgorithm, parseInt(selectedK));
+      setTrainResult(response);
+      
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Training failed');
+    } finally {
+      setTraining(false);
+    }
+  };
+
+  // Prepare chart data
+  const getChartData = () => {
+    if (!comparisonResult?.results) return [];
+    
+    const allK = new Set();
+    Object.values(comparisonResult.results).forEach(r => {
+      r.k_values?.forEach(k => allK.add(k));
+    });
+    
+    return Array.from(allK).sort((a, b) => a - b).map(k => {
+      const point = { k };
+      Object.entries(comparisonResult.results).forEach(([algoName, result]) => {
+        const idx = result.k_values?.indexOf(k);
+        if (idx !== -1 && idx !== undefined) {
+          point[algoName] = result.silhouette_scores?.[idx];
+        }
+      });
+      return point;
+    });
+  };
+
+  const algorithmColors = {
+    minibatch_kmeans: '#3b82f6',
+    gmm: '#10b981',
+    birch: '#f59e0b'
+  };
+
+  return (
+    <div className="page">
+      {/* Header */}
+      <div className="page-header">
+        <h2>Clustering</h2>
+        <p>Compare algorithms and train your final model</p>
+      </div>
+
+      {/* Compare Section */}
+      <div className="card">
+        <div className="card-header">
+          <h3><GitCompare size={20} /> Compare Algorithms</h3>
+        </div>
+        <div className="card-content">
+          <div className="form-row">
+            <div className="form-group">
+              <label>Minimum K</label>
+              <input 
+                type="number" 
+                value={kMin}
+                onChange={(e) => setKMin(e.target.value)}
+                min="2"
+                max="50"
+              />
+            </div>
+            <div className="form-group">
+              <label>Maximum K</label>
+              <input 
+                type="number" 
+                value={kMax}
+                onChange={(e) => setKMax(e.target.value)}
+                min="2"
+                max="50"
+              />
+            </div>
+          </div>
+
+          <button 
+            className="btn btn-primary"
+            onClick={handleCompare}
+            disabled={loading}
+          >
+            {loading ? (
+              <>
+                <Loader2 className="spinning" size={18} />
+                Comparing... (this may take a few minutes)
+              </>
+            ) : (
+              <>
+                <PlayCircle size={18} />
+                Run Comparison
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Error Alert */}
+      {error && (
+        <div className="alert alert-error">
+          <XCircle size={20} />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {/* Comparison Results */}
+      {comparisonResult && (
+        <>
+          {/* Best Overall */}
+          {comparisonResult.best_overall && (
+            <div className="card" style={{ borderLeft: '4px solid var(--success-color)' }}>
+              <div className="card-header">
+                <h3><Award size={20} color="var(--success-color)" /> Best Result</h3>
+              </div>
+              <div className="card-content">
+                <div className="stats-grid">
+                  <div className="stat-card">
+                    <div className="label">Algorithm</div>
+                    <div className="value" style={{ fontSize: '1.125rem' }}>
+                      {comparisonResult.best_overall.algorithm}
+                    </div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="label">Best K</div>
+                    <div className="value success">
+                      {comparisonResult.best_overall.k}
+                    </div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="label">Silhouette Score</div>
+                    <div className="value success">
+                      {comparisonResult.best_overall.silhouette?.toFixed(4)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Chart */}
+          <div className="card">
+            <div className="card-header">
+              <h3><TrendingUp size={20} /> Silhouette Scores by K</h3>
+            </div>
+            <div className="card-content">
+              <div className="chart-container">
+                <ResponsiveContainer width="100%" height={300}>
+                  <LineChart data={getChartData()}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis 
+                      dataKey="k" 
+                      label={{ value: 'Number of Clusters (K)', position: 'bottom', offset: -5 }}
+                    />
+                    <YAxis 
+                      label={{ value: 'Silhouette Score', angle: -90, position: 'insideLeft' }}
+                    />
+                    <Tooltip />
+                    <Legend />
+                    {Object.keys(comparisonResult.results || {}).map(algoName => (
+                      <Line 
+                        key={algoName}
+                        type="monotone" 
+                        dataKey={algoName} 
+                        stroke={algorithmColors[algoName] || '#666'}
+                        strokeWidth={2}
+                        dot={{ r: 4 }}
+                        name={comparisonResult.results[algoName]?.display_name || algoName}
+                      />
+                    ))}
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+
+          {/* Results Table */}
+          <div className="card">
+            <div className="card-header">
+              <h3>Algorithm Summary</h3>
+            </div>
+            <div className="card-content">
+              <div className="table-container">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Algorithm</th>
+                      <th>Best K</th>
+                      <th>Best Silhouette</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(comparisonResult.results || {}).map(([algoName, result]) => (
+                      <tr key={algoName}>
+                        <td>
+                          <strong>{result.display_name || algoName}</strong>
+                        </td>
+                        <td>{result.best_k || 'N/A'}</td>
+                        <td>
+                          <span className={`badge ${result.best_silhouette > 0.2 ? 'badge-success' : 'badge-warning'}`}>
+                            {result.best_silhouette?.toFixed(4) || 'N/A'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Train Model Section */}
+      <div className="card">
+        <div className="card-header">
+          <h3><Target size={20} /> Train Final Model</h3>
+        </div>
+        <div className="card-content">
+          <div className="form-row">
+            <div className="form-group">
+              <label>Algorithm</label>
+              <select 
+                value={selectedAlgorithm}
+                onChange={(e) => setSelectedAlgorithm(e.target.value)}
+              >
+                <option value="minibatch_kmeans">MiniBatch K-Means</option>
+                <option value="gmm">Gaussian Mixture Model</option>
+                <option value="birch">BIRCH</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label>Number of Clusters (K)</label>
+              <input 
+                type="number" 
+                value={selectedK}
+                onChange={(e) => setSelectedK(e.target.value)}
+                min="2"
+                max="100"
+              />
+            </div>
+          </div>
+
+          <button 
+            className="btn btn-success"
+            onClick={handleTrain}
+            disabled={training}
+          >
+            {training ? (
+              <>
+                <Loader2 className="spinning" size={18} />
+                Training...
+              </>
+            ) : (
+              <>
+                <Target size={18} />
+                Train Model
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Training Results */}
+      {trainResult && (
+        <div className="card" style={{ borderLeft: '4px solid var(--success-color)' }}>
+          <div className="card-header">
+            <h3><CheckCircle size={20} color="var(--success-color)" /> Model Trained Successfully</h3>
+          </div>
+          <div className="card-content">
+            {/* Metrics */}
+            <div className="stats-grid">
+              <div className="stat-card">
+                <div className="label">Algorithm</div>
+                <div className="value" style={{ fontSize: '1.125rem' }}>
+                  {trainResult.algorithm}
+                </div>
+              </div>
+              <div className="stat-card">
+                <div className="label">Clusters</div>
+                <div className="value success">{trainResult.n_clusters}</div>
+              </div>
+              <div className="stat-card">
+                <div className="label">Silhouette</div>
+                <div className="value">{trainResult.metrics?.silhouette?.toFixed(4)}</div>
+              </div>
+              <div className="stat-card">
+                <div className="label">Davies-Bouldin</div>
+                <div className="value">{trainResult.metrics?.davies_bouldin?.toFixed(4)}</div>
+              </div>
+            </div>
+
+            {/* Cluster Distribution */}
+            <h4 style={{ marginTop: '24px', marginBottom: '16px' }}>Cluster Distribution</h4>
+            <div className="cluster-bars">
+              {trainResult.cluster_distribution?.map((cluster) => (
+                <div key={cluster.cluster_id} className="cluster-bar-item">
+                  <span className="label">Cluster {cluster.cluster_id}</span>
+                  <div className="bar">
+                    <div 
+                      className="fill" 
+                      style={{ 
+                        width: `${Math.max(cluster.percentage, 5)}%`,
+                        background: `hsl(${(cluster.cluster_id * 137) % 360}, 70%, 50%)`
+                      }}
+                    >
+                      {cluster.percentage.toFixed(1)}%
+                    </div>
+                  </div>
+                  <span className="count">{cluster.count.toLocaleString()} users</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Output Files */}
+            <h4 style={{ marginTop: '24px', marginBottom: '16px' }}>Output Files</h4>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <code style={{ 
+                padding: '12px 16px',
+                background: 'var(--bg-light)',
+                borderRadius: 'var(--radius)',
+                fontSize: '0.875rem'
+              }}>
+                Model: {trainResult.model_path}
+              </code>
+              <code style={{ 
+                padding: '12px 16px',
+                background: 'var(--bg-light)',
+                borderRadius: 'var(--radius)',
+                fontSize: '0.875rem'
+              }}>
+                Assignments: {trainResult.assignments_path}
+              </code>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default ClusteringPage;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**
+ * Results Page - View clustering results and download reports
+ */
+
+import React, { useState, useEffect } from 'react';
+import { 
+  BarChart3, 
+  Download,
+  RefreshCw,
+  Loader2,
+  CheckCircle,
+  XCircle,
+  FileText,
+  Users,
+  PieChart
+} from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { getComparisonResults, getClusterAssignments } from '../services/api';
+
+function ResultsPage() {
+  const [loading, setLoading] = useState(false);
+  const [comparisonData, setComparisonData] = useState(null);
+  const [clusterData, setClusterData] = useState(null);
+  const [error, setError] = useState(null);
+  const [selectedAlgorithm, setSelectedAlgorithm] = useState('minibatch_kmeans');
+
+  // Load comparison results on mount
+  useEffect(() => {
+    loadComparisonResults();
+  }, []);
+
+  // Load cluster assignments when algorithm changes
+  useEffect(() => {
+    if (selectedAlgorithm) {
+      loadClusterAssignments(selectedAlgorithm);
+    }
+  }, [selectedAlgorithm]);
+
+  const loadComparisonResults = async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const response = await getComparisonResults();
+      setComparisonData(response);
+    } catch (err) {
+      // Not an error if no results yet
+      if (err.response?.status !== 404) {
+        setError(err.response?.data?.detail || err.message);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadClusterAssignments = async (algorithm) => {
+    try {
+      const response = await getClusterAssignments(algorithm);
+      setClusterData(response);
+    } catch (err) {
+      // Not an error if no results yet
+      setClusterData(null);
+    }
+  };
+
+  // Prepare chart data for cluster distribution
+  const getDistributionChartData = () => {
+    if (!clusterData?.distribution) return [];
+    
+    return Object.entries(clusterData.distribution).map(([clusterId, count]) => ({
+      name: `Cluster ${clusterId}`,
+      users: count,
+      percentage: ((count / clusterData.total_users) * 100).toFixed(1)
+    }));
+  };
+
+  // Colors for clusters
+  const clusterColors = [
+    '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
+    '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1',
+    '#14b8a6', '#a855f7', '#eab308', '#22c55e', '#0ea5e9'
+  ];
+
+  return (
+    <div className="page">
+      {/* Header */}
+      <div className="page-header">
+        <h2>Results</h2>
+        <p>View clustering results and export reports</p>
+      </div>
+
+      {/* Error Alert */}
+      {error && (
+        <div className="alert alert-error">
+          <XCircle size={20} />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {/* Algorithm Selector */}
+      <div className="card">
+        <div className="card-header">
+          <h3><PieChart size={20} /> Cluster Results</h3>
+          <button 
+            className="btn btn-secondary"
+            onClick={() => {
+              loadComparisonResults();
+              loadClusterAssignments(selectedAlgorithm);
+            }}
+            disabled={loading}
+          >
+            <RefreshCw size={16} className={loading ? 'spinning' : ''} />
+            Refresh
+          </button>
+        </div>
+        <div className="card-content">
+          <div className="form-group">
+            <label>Select Algorithm</label>
+            <select 
+              value={selectedAlgorithm}
+              onChange={(e) => setSelectedAlgorithm(e.target.value)}
+            >
+              <option value="minibatch_kmeans">MiniBatch K-Means</option>
+              <option value="gmm">Gaussian Mixture Model</option>
+              <option value="birch">BIRCH</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {/* Cluster Data */}
+      {clusterData ? (
+        <>
+          {/* Summary Stats */}
+          <div className="stats-grid">
+            <div className="stat-card">
+              <div className="label">
+                <Users size={16} style={{ marginRight: '6px', verticalAlign: 'middle' }} />
+                Total Users
+              </div>
+              <div className="value">{clusterData.total_users?.toLocaleString()}</div>
+            </div>
+            <div className="stat-card">
+              <div className="label">
+                <PieChart size={16} style={{ marginRight: '6px', verticalAlign: 'middle' }} />
+                Number of Clusters
+              </div>
+              <div className="value success">{clusterData.n_clusters}</div>
+            </div>
+            <div className="stat-card">
+              <div className="label">Algorithm</div>
+              <div className="value" style={{ fontSize: '1.125rem' }}>{clusterData.algorithm}</div>
+            </div>
+          </div>
+
+          {/* Distribution Chart */}
+          <div className="card">
+            <div className="card-header">
+              <h3><BarChart3 size={20} /> Cluster Distribution</h3>
+            </div>
+            <div className="card-content">
+              <div className="chart-container" style={{ height: '350px' }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={getDistributionChartData()} layout="vertical">
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis type="number" />
+                    <YAxis dataKey="name" type="category" width={80} />
+                    <Tooltip 
+                      formatter={(value, name) => [value.toLocaleString() + ' users', 'Count']}
+                    />
+                    <Bar dataKey="users" radius={[0, 4, 4, 0]}>
+                      {getDistributionChartData().map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={clusterColors[index % clusterColors.length]} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              {/* Distribution Table */}
+              <div className="table-container" style={{ marginTop: '24px' }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Cluster</th>
+                      <th>Users</th>
+                      <th>Percentage</th>
+                      <th>Distribution</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(clusterData.distribution || {}).map(([clusterId, count], index) => {
+                      const percentage = (count / clusterData.total_users) * 100;
+                      return (
+                        <tr key={clusterId}>
+                          <td>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <div style={{
+                                width: '12px',
+                                height: '12px',
+                                borderRadius: '50%',
+                                background: clusterColors[index % clusterColors.length]
+                              }} />
+                              Cluster {clusterId}
+                            </div>
+                          </td>
+                          <td>{count.toLocaleString()}</td>
+                          <td>{percentage.toFixed(2)}%</td>
+                          <td style={{ width: '40%' }}>
+                            <div className="progress-bar">
+                              <div 
+                                className="fill" 
+                                style={{ 
+                                  width: `${percentage}%`,
+                                  background: clusterColors[index % clusterColors.length]
+                                }} 
+                              />
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          {/* Sample Data */}
+          <div className="card">
+            <div className="card-header">
+              <h3><FileText size={20} /> Sample Assignments</h3>
+              <span className="badge badge-info">First 10 users</span>
+            </div>
+            <div className="card-content">
+              <div className="table-container">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>User ID</th>
+                      <th>Cluster</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {clusterData.sample?.map((row, index) => (
+                      <tr key={index}>
+                        <td><code>{row.user_id}</code></td>
+                        <td>
+                          <span className="badge badge-info">
+                            Cluster {row.cluster}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          {/* File Path */}
+          <div className="card">
+            <div className="card-header">
+              <h3><Download size={20} /> Export Data</h3>
+            </div>
+            <div className="card-content">
+              <p style={{ marginBottom: '12px', color: 'var(--text-secondary)' }}>
+                Cluster assignments file location:
+              </p>
+              <code style={{ 
+                display: 'block',
+                padding: '12px 16px',
+                background: 'var(--bg-light)',
+                borderRadius: 'var(--radius)',
+                fontSize: '0.875rem',
+                marginBottom: '16px'
+              }}>
+                {clusterData.file_path}
+              </code>
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="card">
+          <div className="card-content">
+            <div className="loading">
+              {loading ? (
+                <>
+                  <Loader2 className="spinning" size={40} />
+                  <p>Loading results...</p>
+                </>
+              ) : (
+                <>
+                  <BarChart3 size={40} color="var(--text-secondary)" />
+                  <p>No results found for {selectedAlgorithm}</p>
+                  <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                    Train a model first to see results here
+                  </p>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Comparison Results */}
+      {comparisonData && comparisonData.data && (
+        <div className="card">
+          <div className="card-header">
+            <h3><FileText size={20} /> Algorithm Comparison Report</h3>
+          </div>
+          <div className="card-content">
+            <div className="table-container">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Algorithm</th>
+                    <th>K</th>
+                    <th>Silhouette</th>
+                    <th>Calinski-Harabasz</th>
+                    <th>Davies-Bouldin</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {comparisonData.data.slice(0, 20).map((row, index) => (
+                    <tr key={index}>
+                      <td>{row.algorithm}</td>
+                      <td>{row.k}</td>
+                      <td>
+                        <span className={`badge ${row.silhouette > 0.2 ? 'badge-success' : 'badge-warning'}`}>
+                          {row.silhouette?.toFixed(4) || 'N/A'}
+                        </span>
+                      </td>
+                      <td>{row.calinski_harabasz?.toFixed(2) || 'N/A'}</td>
+                      <td>{row.davies_bouldin?.toFixed(4) || 'N/A'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {comparisonData.data.length > 20 && (
+              <p style={{ marginTop: '12px', color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
+                Showing first 20 rows. Full report available at: {comparisonData.file_path}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default ResultsPage;
+
+
+
+
+
+
 
 
 
