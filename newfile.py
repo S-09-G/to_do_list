@@ -469,3 +469,436 @@ class GuidedClustering:
                 deleted = True
 
         return deleted
+
+
+
+
+
+
+
+
+
+
+
+
+    # ============================================================
+    # GUIDED CLUSTERING
+    # ============================================================
+    #
+    # Paste this section into pipeline_service.py right BEFORE the
+    # singleton block (line ~1342, before "# Create a singleton instance").
+    #
+    # Also add this import at the top of the file alongside the other imports:
+    #   from src.models.guided_clustering import GuidedClustering
+    # ============================================================
+
+    def get_guided_features(self) -> Dict[str, Any]:
+        """Return all available feature names for the guided clustering UI."""
+        self.logger.info("API: Fetching available features for guided clustering...")
+
+        try:
+            guided = GuidedClustering(self.config, self.logger)
+            features = guided.get_available_features()
+
+            return {
+                "success": True,
+                "features": features,
+                "total": len(features),
+                "message": f"Found {len(features):,} available features",
+            }
+
+        except Exception as e:
+            self.logger.error(f"Guided feature fetch failed: {str(e)}")
+            return {
+                "success": False,
+                "features": [],
+                "total": 0,
+                "message": f"Error: {str(e)}",
+            }
+
+    def run_guided_clustering(
+        self,
+        cluster_definitions: List[Dict],
+        confidence_threshold: float = 0.0,
+    ) -> Dict[str, Any]:
+        """
+        Run guided clustering: build synthetic centroids from manager-defined
+        features+weights, assign all users via cosine similarity.
+
+        Parameters
+        ----------
+        cluster_definitions : list of dict
+            Each dict has:
+              - "features": dict of feature_name -> weight (0.0 to 1.0)
+            Example:
+            [
+                {"features": {"genre_Comedy": 0.8, "genre_Romance": 0.5}},
+                {"features": {"genre_Action": 0.9, "genre_Thriller": 0.7}},
+            ]
+        confidence_threshold : float
+            Min cosine similarity to assign a user. Users below this
+            get cluster = -1 (unassigned).
+
+        Returns
+        -------
+        dict with success, metrics, profiles, run_id, etc.
+        """
+        self.logger.info(
+            f"API: Running guided clustering with {len(cluster_definitions)} clusters, "
+            f"threshold={confidence_threshold}..."
+        )
+
+        try:
+            # Validate input
+            if not cluster_definitions or len(cluster_definitions) == 0:
+                return {
+                    "success": False,
+                    "message": "Must define at least 1 cluster.",
+                }
+
+            for i, cd in enumerate(cluster_definitions):
+                if "features" not in cd or not cd["features"]:
+                    return {
+                        "success": False,
+                        "message": f"Cluster {i} has no features defined.",
+                    }
+
+            guided = GuidedClustering(self.config, self.logger)
+
+            # Step 1: Get feature names
+            feature_names = guided.get_available_features()
+
+            # Step 2: Build synthetic centroids
+            centroids = guided.build_synthetic_centroids(
+                cluster_definitions, feature_names
+            )
+
+            # Check for zero centroids
+            zero_centroids = []
+            for k in range(centroids.shape[0]):
+                if np.all(centroids[k] == 0):
+                    zero_centroids.append(k)
+
+            if zero_centroids:
+                return {
+                    "success": False,
+                    "message": (
+                        f"Cluster(s) {zero_centroids} have no valid features. "
+                        f"None of the specified feature names matched the vocabulary."
+                    ),
+                }
+
+            # Step 3: Assign users
+            result = guided.assign_users(
+                centroids,
+                confidence_threshold=confidence_threshold,
+            )
+
+            labels = result["labels"]
+            similarities = result["similarities"]
+            user_ids = result["user_ids"]
+            feat_names = result["feature_names"]
+
+            # Step 4: Compute metrics
+            metrics = guided.compute_metrics(
+                labels, similarities, cluster_definitions
+            )
+
+            # Step 5: Generate profiles (uses raw sparse matrix)
+            from src.data_processing.config_data_loader import ConfigDataLoader
+
+            raw_path = ConfigDataLoader.find_raw_matrix_path(
+                self.config["paths"]["processed_data"]
+            )
+            csr, _, _ = ConfigDataLoader.load_sparse_raw(raw_path)
+
+            profiles = guided.generate_profiles(
+                csr, labels, feat_names, cluster_definitions
+            )
+            del csr
+            gc.collect()
+
+            # Step 6: Save everything
+            save_result = guided.save_results(
+                user_ids=user_ids,
+                labels=labels,
+                similarities=similarities,
+                cluster_definitions=cluster_definitions,
+                metrics=metrics,
+                profiles=profiles,
+                confidence_threshold=confidence_threshold,
+            )
+
+            return {
+                "success": True,
+                "run_id": save_result["run_id"],
+                "n_clusters": len(cluster_definitions),
+                "confidence_threshold": confidence_threshold,
+                "metrics": metrics,
+                "profiles": profiles,
+                "assignments_path": save_result["assignments_path"],
+                "message": (
+                    f"Guided clustering complete. "
+                    f"{metrics['total_assigned']:,} assigned, "
+                    f"{metrics['total_unassigned']:,} unassigned "
+                    f"across {len(cluster_definitions)} clusters."
+                ),
+            }
+
+        except Exception as e:
+            self.logger.error(f"Guided clustering failed: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return {
+                "success": False,
+                "message": f"Error: {str(e)}",
+            }
+
+    def list_guided_runs(self) -> Dict[str, Any]:
+        """List all saved guided clustering runs."""
+        self.logger.info("API: Listing guided clustering runs...")
+
+        try:
+            guided = GuidedClustering(self.config, self.logger)
+            runs = guided.list_runs()
+
+            return {
+                "success": True,
+                "runs": runs,
+                "total": len(runs),
+                "message": f"Found {len(runs)} guided clustering run(s)",
+            }
+
+        except Exception as e:
+            self.logger.error(f"List guided runs failed: {str(e)}")
+            return {
+                "success": False,
+                "runs": [],
+                "total": 0,
+                "message": f"Error: {str(e)}",
+            }
+
+    def get_guided_run(self, run_id: str) -> Dict[str, Any]:
+        """Load a specific guided clustering run."""
+        self.logger.info(f"API: Loading guided run '{run_id}'...")
+
+        try:
+            guided = GuidedClustering(self.config, self.logger)
+            run_data = guided.load_run(run_id)
+
+            return {
+                "success": True,
+                **run_data,
+                "message": f"Loaded guided run '{run_id}'",
+            }
+
+        except FileNotFoundError:
+            return {
+                "success": False,
+                "message": f"Guided run '{run_id}' not found.",
+            }
+        except Exception as e:
+            self.logger.error(f"Load guided run failed: {str(e)}")
+            return {
+                "success": False,
+                "message": f"Error: {str(e)}",
+            }
+
+    def delete_guided_run(self, run_id: str) -> Dict[str, Any]:
+        """Delete a guided clustering run."""
+        self.logger.info(f"API: Deleting guided run '{run_id}'...")
+
+        try:
+            guided = GuidedClustering(self.config, self.logger)
+            deleted = guided.delete_run(run_id)
+
+            if deleted:
+                return {
+                    "success": True,
+                    "run_id": run_id,
+                    "message": f"Deleted guided run '{run_id}'",
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": f"Guided run '{run_id}' not found.",
+                }
+
+        except Exception as e:
+            self.logger.error(f"Delete guided run failed: {str(e)}")
+            return {
+                "success": False,
+                "message": f"Error: {str(e)}",
+            }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ============================================================
+# GUIDED CLUSTERING ROUTES
+# ============================================================
+#
+# Paste this into your existing routes file (e.g., pipeline_routes.py).
+#
+# Add these Pydantic models at the top of the file alongside your
+# other models, and add the route functions wherever your other
+# route functions are.
+# ============================================================
+
+
+# ----- PYDANTIC MODELS (add alongside your other models) -----
+
+from pydantic import BaseModel, Field
+from typing import Dict, List, Optional
+
+
+class ClusterDefinition(BaseModel):
+    features: Dict[str, float] = Field(
+        ...,
+        description="Feature name -> weight mapping. e.g. {'genre_Comedy': 0.8, 'genre_Romance': 0.5}",
+    )
+
+
+class GuidedClusteringRequest(BaseModel):
+    clusters: List[ClusterDefinition] = Field(
+        ...,
+        min_length=1,
+        description="List of cluster definitions, each with features and weights",
+    )
+    confidence_threshold: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Min cosine similarity to assign a user. Below this -> unassigned (-1).",
+    )
+
+
+# ----- ROUTE FUNCTIONS (add alongside your other routes) -----
+
+
+@router.get("/guided/features")
+async def get_guided_features():
+    """
+    Get all available feature names for the guided clustering UI.
+    The frontend uses this to populate the feature selection dropdown/search.
+    """
+    service = get_pipeline_service()
+    return service.get_guided_features()
+
+
+@router.post("/guided/run")
+async def run_guided_clustering(request: GuidedClusteringRequest):
+    """
+    Run guided clustering with manager-defined cluster definitions.
+
+    Each cluster is defined by a set of features + weights.
+    Users are assigned to the nearest cluster via cosine similarity.
+    Users below the confidence_threshold are left unassigned (cluster = -1).
+
+    Example request body:
+    {
+        "clusters": [
+            {"features": {"genre_Comedy": 0.8, "genre_Romance": 0.5}},
+            {"features": {"genre_Action": 0.9, "genre_Thriller": 0.7}},
+            {"features": {"genre_Drama": 0.6, "genre_Korean": 0.8, "genre_Hindi": 0.4}}
+        ],
+        "confidence_threshold": 0.1
+    }
+    """
+    service = get_pipeline_service()
+
+    # Convert Pydantic models to plain dicts for the service layer
+    cluster_definitions = [cd.model_dump() for cd in request.clusters]
+
+    return service.run_guided_clustering(
+        cluster_definitions=cluster_definitions,
+        confidence_threshold=request.confidence_threshold,
+    )
+
+
+@router.get("/guided/runs")
+async def list_guided_runs():
+    """List all saved guided clustering runs."""
+    service = get_pipeline_service()
+    return service.list_guided_runs()
+
+
+@router.get("/guided/runs/{run_id}")
+async def get_guided_run(run_id: str):
+    """Load a specific guided clustering run by its run_id."""
+    service = get_pipeline_service()
+    return service.get_guided_run(run_id)
+
+
+@router.delete("/guided/runs/{run_id}")
+async def delete_guided_run(run_id: str):
+    """Delete a guided clustering run."""
+    service = get_pipeline_service()
+    return service.delete_guided_run(run_id)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ============================================================
+// GUIDED CLUSTERING
+// ============================================================
+// Add these functions to your existing frontend/src/services/api.js
+
+export const getGuidedFeatures = async () => {
+  const response = await api.get('/guided/features');
+  return response.data;
+};
+
+export const runGuidedClustering = async (clusters, confidenceThreshold = 0.0) => {
+  const response = await api.post('/guided/run', {
+    clusters: clusters,
+    confidence_threshold: confidenceThreshold,
+  });
+  return response.data;
+};
+
+export const listGuidedRuns = async () => {
+  const response = await api.get('/guided/runs');
+  return response.data;
+};
+
+export const getGuidedRun = async (runId) => {
+  const response = await api.get(`/guided/runs/${runId}`);
+  return response.data;
+};
+
+export const deleteGuidedRun = async (runId) => {
+  const response = await api.delete(`/guided/runs/${runId}`);
+  return response.data;
+};
