@@ -252,7 +252,6 @@ class GuidedClustering:
                 sims = similarities[mask]
                 cluster_stats.append({
                     "cluster_id": k,
-                    "name": cluster_definitions[k]["name"],
                     "size": count,
                     "percentage": round(count / total_users * 100, 2),
                     "mean_similarity": round(float(np.mean(sims)), 4),
@@ -263,7 +262,6 @@ class GuidedClustering:
             else:
                 cluster_stats.append({
                     "cluster_id": k,
-                    "name": cluster_definitions[k]["name"],
                     "size": 0,
                     "percentage": 0.0,
                     "mean_similarity": 0.0,
@@ -315,7 +313,6 @@ class GuidedClustering:
             if count == 0:
                 profiles[str(k)] = {
                     "cluster_id": k,
-                    "name": cluster_definitions[k]["name"],
                     "defined_features": cluster_definitions[k]["features"],
                     "size": 0,
                     "percentage": 0.0,
@@ -356,7 +353,6 @@ class GuidedClustering:
             total = len(labels)
             profiles[str(k)] = {
                 "cluster_id": k,
-                "name": cluster_definitions[k]["name"],
                 "defined_features": cluster_definitions[k]["features"],
                 "size": count,
                 "percentage": round(count / total * 100, 2),
@@ -378,6 +374,7 @@ class GuidedClustering:
         cluster_definitions: List[Dict],
         metrics: Dict[str, Any],
         profiles: Dict[str, Any],
+        confidence_threshold: float = 0.0,
     ) -> Dict[str, str]:
         """
         Save a guided clustering run. Returns dict of file paths.
@@ -407,6 +404,7 @@ class GuidedClustering:
             "run_id": run_id,
             "created_at": datetime.now().isoformat(),
             "n_clusters": len(cluster_definitions),
+            "confidence_threshold": confidence_threshold,
             "cluster_definitions": cluster_definitions,
             "metrics": metrics,
             "profiles": profiles,
@@ -438,11 +436,10 @@ class GuidedClustering:
                         "run_id": meta["run_id"],
                         "created_at": meta["created_at"],
                         "n_clusters": meta["n_clusters"],
-                        "cluster_names": [
-                            cd["name"] for cd in meta["cluster_definitions"]
-                        ],
+                        "confidence_threshold": meta.get("confidence_threshold", 0.0),
                         "total_users": meta["metrics"]["total_users"],
                         "total_assigned": meta["metrics"]["total_assigned"],
+                        "total_unassigned": meta["metrics"]["total_unassigned"],
                     })
                 except Exception as e:
                     self.logger.warning(f"Could not read {fname}: {e}")
